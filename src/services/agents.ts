@@ -6,13 +6,12 @@ const parser = new XMLParser();
 
 export const LiteratureAgent = {
   async fetchPapers(topic: string): Promise<Paper[]> {
-    const query = encodeURIComponent(topic);
-    const url = `https://export.arxiv.org/api/query?search_query=all:${query}&start=0&max_results=5`;
+    const url = `/api/arxiv?q=${encodeURIComponent(topic)}`;
     
     try {
       const response = await fetch(url);
       if (!response.ok) {
-        throw new Error(`arXiv API responded with status: ${response.status}`);
+        throw new Error(`Proxy responded with status: ${response.status}`);
       }
       const xmlData = await response.text();
       const jsonObj = parser.parse(xmlData);
@@ -27,7 +26,6 @@ export const LiteratureAgent = {
           ? entry.author.map((a: any) => a.name) 
           : [entry.author.name];
         const year = new Date(entry.published).getFullYear();
-        const firstAuthor = authors[0].split(' ').pop();
         
         return {
           title: entry.title.replace(/\n/g, " ").trim(),
@@ -40,10 +38,7 @@ export const LiteratureAgent = {
       });
     } catch (error: any) {
       console.error("LiteratureAgent error:", error);
-      if (error.message.includes('Failed to fetch')) {
-        throw new Error("Failed to fetch from arXiv. This might be due to network restrictions or CORS. Please try again or check your connection.");
-      }
-      throw error;
+      throw new Error("Failed to fetch from arXiv via proxy. Please try again.");
     }
   }
 };
