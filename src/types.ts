@@ -28,6 +28,7 @@ export interface Critique {
   weaknesses: string[];
   suggestions: string[];
   overallRating: number;
+  isReliable: boolean;
 }
 
 export interface ResearchReport {
@@ -37,6 +38,7 @@ export interface ResearchReport {
   results: string;
   discussion: string;
   conclusion: string;
+  references: string[];
 }
 
 export type AgentStatus = 'idle' | 'searching' | 'hypothesizing' | 'experimenting' | 'critiquing' | 'reporting' | 'completed' | 'error';
@@ -50,4 +52,5 @@ export interface AppState {
   critique: Critique | null;
   report: ResearchReport | null;
   error: string | null;
+  iteration: number;
 }

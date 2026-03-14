@@ -11,7 +11,7 @@ async function startServer() {
     const { q } = req.query;
     if (!q) return res.status(400).json({ error: "Query parameter 'q' is required" });
 
-    const url = `https://export.arxiv.org/api/query?search_query=all:${encodeURIComponent(q as string)}&start=0&max_results=5`;
+    const url = `https://export.arxiv.org/api/query?search_query=all:${encodeURIComponent(q as string)}&start=0&max_results=20&sortBy=relevance&sortOrder=descending`;
     
     try {
       const response = await fetch(url);

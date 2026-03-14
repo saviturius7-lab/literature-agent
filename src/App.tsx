@@ -13,12 +13,15 @@ import {
   BrainCircuit,
   Copy,
   Download,
-  Printer
+  Printer,
+  RefreshCw
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { clsx, type ClassValue } from 'clsx';
 import { twMerge } from 'tailwind-merge';
 import Markdown from 'react-markdown';
+// @ts-ignore
+import html2pdf from 'html2pdf.js';
 
 import { 
   Paper, 
@@ -31,6 +34,7 @@ import {
 } from './types';
 import { 
   LiteratureAgent, 
+  SelectionAgent,
   HypothesisAgent, 
   ExperimentRunner, 
   CriticAgent, 
@@ -51,13 +55,19 @@ export default function App() {
     critique: null,
     report: null,
     error: null,
+    iteration: 0,
   });
 
   const [inputTopic, setInputTopic] = useState('');
   const [copiedIndex, setCopiedIndex] = useState<number | null>(null);
+  const reportRef = useRef<HTMLDivElement>(null);
 
   const runResearch = async () => {
     if (!inputTopic.trim()) return;
+
+    let currentIteration = 1;
+    const MAX_ITERATIONS = 3;
+    let isReliable = false;
 
     setState(prev => ({ 
       ...prev, 
@@ -68,32 +78,56 @@ export default function App() {
       hypothesis: null,
       experiment: null,
       critique: null,
-      report: null
+      report: null,
+      iteration: currentIteration
     }));
 
     try {
-      // 1. Literature Agent
-      const papers = await LiteratureAgent.fetchPapers(inputTopic);
-      if (papers.length === 0) {
-        throw new Error("No papers found for this topic on arXiv.");
+      while (!isReliable && currentIteration <= MAX_ITERATIONS) {
+        setState(prev => ({ ...prev, iteration: currentIteration, status: 'searching' }));
+
+        // 1. Literature Agent
+        const rawPapers = await LiteratureAgent.fetchPapers(inputTopic);
+        if (rawPapers.length === 0) {
+          throw new Error("No papers found for this topic on arXiv.");
+        }
+        
+        // 1b. Selection Agent (Filter for high impact)
+        setState(prev => ({ ...prev, status: 'searching' })); // Stay in searching while selecting
+        const papers = await SelectionAgent.selectPapers(inputTopic, rawPapers);
+        setState(prev => ({ ...prev, status: 'hypothesizing', papers }));
+
+        // 2. Hypothesis Agent
+        const hypothesis = await HypothesisAgent.generateHypothesis(inputTopic, papers);
+        setState(prev => ({ ...prev, status: 'experimenting', hypothesis }));
+
+        // 3. Experiment Runner
+        const experiment = await ExperimentRunner.runExperiment(hypothesis);
+        setState(prev => ({ ...prev, status: 'critiquing', experiment }));
+
+        // 4. Critic Agent
+        const critique = await CriticAgent.critiqueResults(hypothesis, experiment);
+        isReliable = critique.isReliable;
+        
+        if (!isReliable && currentIteration < MAX_ITERATIONS) {
+          console.log(`Iteration ${currentIteration} unreliable. Retrying...`);
+          currentIteration++;
+          setState(prev => ({ ...prev, critique })); // Show the critique before retrying
+          await new Promise(resolve => setTimeout(resolve, 2000));
+          continue;
+        }
+
+        setState(prev => ({ ...prev, status: 'reporting', critique }));
+
+        // 5. Report Agent
+        const report = await ReportAgent.generateReport(inputTopic, papers, hypothesis, experiment, critique);
+        setState(prev => ({ ...prev, status: 'completed', report }));
+        break;
       }
-      setState(prev => ({ ...prev, status: 'hypothesizing', papers }));
 
-      // 2. Hypothesis Agent
-      const hypothesis = await HypothesisAgent.generateHypothesis(inputTopic, papers);
-      setState(prev => ({ ...prev, status: 'experimenting', hypothesis }));
-
-      // 3. Experiment Runner
-      const experiment = await ExperimentRunner.runExperiment(hypothesis);
-      setState(prev => ({ ...prev, status: 'critiquing', experiment }));
-
-      // 4. Critic Agent
-      const critique = await CriticAgent.critiqueResults(hypothesis, experiment);
-      setState(prev => ({ ...prev, status: 'reporting', critique }));
-
-      // 5. Report Agent
-      const report = await ReportAgent.generateReport(inputTopic, papers, hypothesis, experiment, critique);
-      setState(prev => ({ ...prev, status: 'completed', report }));
+      if (!isReliable && currentIteration > MAX_ITERATIONS) {
+        setState(prev => ({ ...prev, status: 'completed', error: "Max iterations reached without achieving full reliability. Final report generated based on best attempt." }));
+      }
 
     } catch (err: any) {
       console.error("Research workflow error:", err);
@@ -107,7 +141,7 @@ export default function App() {
     setTimeout(() => setCopiedIndex(null), 2000);
   };
 
-  const exportReport = () => {
+  const exportMarkdown = () => {
     if (!state.report) return;
     
     const content = `
@@ -134,7 +168,7 @@ ${state.report.conclusion}
 
 ---
 ## References
-${state.papers.map(p => `- ${p.citation}`).join('\n')}
+${state.report.references.map(ref => `- ${ref}`).join('\n')}
     `.trim();
 
     const blob = new Blob([content], { type: 'text/markdown' });
@@ -146,6 +180,21 @@ ${state.papers.map(p => `- ${p.citation}`).join('\n')}
     a.click();
     document.body.removeChild(a);
     URL.revokeObjectURL(url);
+  };
+
+  const exportPDF = () => {
+    if (!reportRef.current) return;
+
+    const element = reportRef.current;
+    const opt = {
+      margin: 1,
+      filename: `research_report_${state.topic.replace(/\s+/g, '_').toLowerCase()}.pdf`,
+      image: { type: 'jpeg' as const, quality: 0.98 },
+      html2canvas: { scale: 2, useCORS: true },
+      jsPDF: { unit: 'in' as const, format: 'letter' as const, orientation: 'portrait' as const }
+    };
+
+    html2pdf().set(opt).from(element).save();
   };
 
   const steps = [
@@ -171,8 +220,14 @@ ${state.papers.map(p => `- ${p.citation}`).join('\n')}
             <h1 className="text-lg font-semibold tracking-tight italic serif">Literature Agent</h1>
           </div>
           
-          <div className="flex items-center gap-4">
-            <div className="relative">
+            <div className="flex items-center gap-4">
+              {state.iteration > 0 && (
+                <div className="hidden md:flex items-center gap-2 px-3 py-1 bg-amber-50 border border-amber-200 rounded-full">
+                  <RefreshCw className={cn("w-3 h-3 text-amber-600", state.status !== 'completed' && "animate-spin")} />
+                  <span className="text-[10px] font-bold text-amber-700 uppercase tracking-wider">Iter: {state.iteration}</span>
+                </div>
+              )}
+              <div className="relative">
               <input 
                 type="text"
                 value={inputTopic}
@@ -385,7 +440,15 @@ ${state.papers.map(p => `- ${p.citation}`).join('\n')}
                   className="space-y-6 pt-12 border-t border-[#1A1A1A]/10"
                 >
                   <div className="flex items-center justify-between">
-                    <h2 className="text-2xl font-serif italic">Peer Critique</h2>
+                    <div className="flex items-center gap-3">
+                      <h2 className="text-2xl font-serif italic">Peer Critique</h2>
+                      <span className="text-[10px] text-[#1A1A1A]/40 font-mono">(Iteration {state.iteration})</span>
+                      {state.critique.isReliable ? (
+                        <span className="px-2 py-0.5 bg-emerald-100 text-emerald-700 text-[10px] font-bold rounded uppercase tracking-wider">Reliable</span>
+                      ) : (
+                        <span className="px-2 py-0.5 bg-amber-100 text-amber-700 text-[10px] font-bold rounded uppercase tracking-wider">Needs Improvement</span>
+                      )}
+                    </div>
                     <span className="text-[10px] font-bold uppercase tracking-widest text-[#1A1A1A]/40">CriticAgent</span>
                   </div>
                   <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
@@ -435,8 +498,13 @@ ${state.papers.map(p => `- ${p.citation}`).join('\n')}
                     <span className="text-[10px] font-bold uppercase tracking-widest text-[#1A1A1A]/40">ReportAgent</span>
                   </div>
                   
-                  <div className="prose prose-sm max-w-none space-y-8">
-                    <div className="bg-[#F5F5F5] p-8 rounded-3xl">
+                  <div ref={reportRef} className="prose prose-sm max-w-none space-y-8 bg-white p-8 rounded-3xl border border-[#1A1A1A]/5">
+                    <div className="text-center mb-12">
+                      <h1 className="text-4xl font-serif italic mb-2">{state.topic}</h1>
+                      <p className="text-xs uppercase tracking-widest text-[#1A1A1A]/40">Generated by Literature Agent • {new Date().toLocaleDateString()}</p>
+                    </div>
+
+                    <div className="bg-[#F5F5F5] p-8 rounded-2xl">
                       <h3 className="text-xs uppercase tracking-widest font-bold mb-4">Abstract</h3>
                       <p className="text-lg leading-relaxed font-serif italic text-[#1A1A1A]/80">{state.report.abstract}</p>
                     </div>
@@ -452,7 +520,7 @@ ${state.papers.map(p => `- ${p.citation}`).join('\n')}
                       </section>
                     </div>
 
-                    <section className="bg-white border border-[#1A1A1A]/10 p-8 rounded-3xl">
+                    <section className="bg-white border border-[#1A1A1A]/10 p-8 rounded-2xl">
                       <h3 className="text-xs uppercase tracking-widest font-bold mb-6 text-center">Experimental Results</h3>
                       <div className="text-sm leading-relaxed text-[#1A1A1A]/70"><Markdown>{state.report.results}</Markdown></div>
                     </section>
@@ -467,22 +535,40 @@ ${state.papers.map(p => `- ${p.citation}`).join('\n')}
                         <div className="text-sm leading-relaxed text-[#1A1A1A]/70"><Markdown>{state.report.conclusion}</Markdown></div>
                       </section>
                     </div>
+
+                    <section className="pt-8 border-t border-[#1A1A1A]/10">
+                      <h3 className="text-xs uppercase tracking-widest font-bold mb-4">References</h3>
+                      <ul className="space-y-2">
+                        {state.report.references.map((ref, i) => (
+                          <li key={i} className="text-[11px] text-[#1A1A1A]/50 font-mono leading-relaxed">
+                            [{i+1}] {ref}
+                          </li>
+                        ))}
+                      </ul>
+                    </section>
                   </div>
 
                   <div className="flex flex-col sm:flex-row justify-center gap-4 pt-12">
                     <button 
-                      onClick={exportReport}
+                      onClick={exportMarkdown}
+                      className="flex items-center justify-center gap-2 px-8 py-3 bg-white border border-[#1A1A1A]/10 text-[#1A1A1A] rounded-full hover:bg-[#F5F5F5] transition-all shadow-sm"
+                    >
+                      <FileText className="w-4 h-4" />
+                      Export Markdown (.md)
+                    </button>
+                    <button 
+                      onClick={exportPDF}
                       className="flex items-center justify-center gap-2 px-8 py-3 bg-[#1A1A1A] text-white rounded-full hover:bg-[#333] transition-all shadow-lg"
                     >
                       <Download className="w-4 h-4" />
-                      Export Markdown (.md)
+                      Export PDF (.pdf)
                     </button>
                     <button 
                       onClick={() => window.print()}
                       className="flex items-center justify-center gap-2 px-8 py-3 bg-white border border-[#1A1A1A]/10 text-[#1A1A1A] rounded-full hover:bg-[#F5F5F5] transition-all shadow-sm"
                     >
                       <Printer className="w-4 h-4" />
-                      Print / PDF
+                      Print
                     </button>
                   </div>
                 </motion.section>
