@@ -209,12 +209,12 @@ ${state.report.references.map(ref => `- ${ref}`).join('\n')}
   const isCompleted = state.status === 'completed';
 
   return (
-    <div className="min-h-screen bg-[#FDFCFB] text-[#1A1A1A] font-sans selection:bg-[#E6E6E6]">
+    <div className="min-h-screen bg-dark-bg text-pink-pale font-sans selection:bg-pink-deep selection:text-white">
       {/* Header */}
-      <header className="border-b border-[#1A1A1A]/10 bg-white/80 backdrop-blur-md sticky top-0 z-50">
+      <header className="border-b border-pink-pale/10 bg-dark-surface/80 backdrop-blur-md sticky top-0 z-50">
         <div className="max-w-6xl mx-auto px-6 h-16 flex items-center justify-between">
           <div className="flex items-center gap-2">
-            <div className="w-8 h-8 bg-[#1A1A1A] rounded-lg flex items-center justify-center">
+            <div className="w-8 h-8 bg-pink-deep rounded-lg flex items-center justify-center">
               <BrainCircuit className="text-white w-5 h-5" />
             </div>
             <h1 className="text-lg font-semibold tracking-tight italic serif">Literature Agent</h1>
@@ -222,9 +222,9 @@ ${state.report.references.map(ref => `- ${ref}`).join('\n')}
           
             <div className="flex items-center gap-4">
               {state.iteration > 0 && (
-                <div className="hidden md:flex items-center gap-2 px-3 py-1 bg-amber-50 border border-amber-200 rounded-full">
-                  <RefreshCw className={cn("w-3 h-3 text-amber-600", state.status !== 'completed' && "animate-spin")} />
-                  <span className="text-[10px] font-bold text-amber-700 uppercase tracking-wider">Iter: {state.iteration}</span>
+                <div className="hidden md:flex items-center gap-2 px-3 py-1 bg-pink-deep/10 border border-pink-deep/20 rounded-full">
+                  <RefreshCw className={cn("w-3 h-3 text-pink-deep", state.status !== 'completed' && "animate-spin")} />
+                  <span className="text-[10px] font-bold text-pink-deep uppercase tracking-wider">Iter: {state.iteration}</span>
                 </div>
               )}
               <div className="relative">
@@ -233,14 +233,14 @@ ${state.report.references.map(ref => `- ${ref}`).join('\n')}
                 value={inputTopic}
                 onChange={(e) => setInputTopic(e.target.value)}
                 placeholder="Enter research topic..."
-                className="w-64 md:w-96 px-4 py-2 bg-[#F5F5F5] border border-transparent focus:border-[#1A1A1A]/20 focus:bg-white rounded-full text-sm transition-all outline-none"
+                className="w-64 md:w-96 px-4 py-2 bg-dark-bg border border-pink-pale/10 focus:border-pink-deep/40 focus:bg-dark-surface rounded-full text-sm transition-all outline-none placeholder:text-pink-pale/20"
                 onKeyDown={(e) => e.key === 'Enter' && runResearch()}
                 disabled={state.status !== 'idle' && state.status !== 'completed' && state.status !== 'error'}
               />
               <button 
                 onClick={runResearch}
                 disabled={state.status !== 'idle' && state.status !== 'completed' && state.status !== 'error'}
-                className="absolute right-1 top-1 bottom-1 px-4 bg-[#1A1A1A] text-white rounded-full text-xs font-medium hover:bg-[#333] transition-colors disabled:opacity-50"
+                className="absolute right-1 top-1 bottom-1 px-4 bg-pink-deep text-white rounded-full text-xs font-bold uppercase tracking-widest hover:bg-pink-deep/90 transition-colors disabled:opacity-50"
               >
                 {state.status === 'idle' || isCompleted || state.status === 'error' ? 'Start' : 'Running...'}
               </button>
@@ -253,7 +253,7 @@ ${state.report.references.map(ref => `- ${ref}`).join('\n')}
         {/* Progress Tracker */}
         <div className="mb-16">
           <div className="flex items-center justify-between relative">
-            <div className="absolute top-1/2 left-0 right-0 h-[1px] bg-[#1A1A1A]/10 -translate-y-1/2 z-0" />
+            <div className="absolute top-1/2 left-0 right-0 h-[1px] bg-pink-pale/10 -translate-y-1/2 z-0" />
             {steps.map((step, idx) => {
               const Icon = step.icon;
               const isActive = state.status === step.id;
@@ -263,15 +263,15 @@ ${state.report.references.map(ref => `- ${ref}`).join('\n')}
                 <div key={step.id} className="relative z-10 flex flex-col items-center gap-3">
                   <div className={cn(
                     "w-12 h-12 rounded-full flex items-center justify-center transition-all duration-500 border-2",
-                    isActive ? "bg-[#1A1A1A] border-[#1A1A1A] text-white scale-110 shadow-lg" : 
-                    isPast ? "bg-white border-[#1A1A1A] text-[#1A1A1A]" : 
-                    "bg-white border-[#1A1A1A]/10 text-[#1A1A1A]/30"
+                    isActive ? "bg-pink-deep border-pink-deep text-white scale-110 shadow-lg shadow-pink-deep/20" : 
+                    isPast ? "bg-dark-bg border-pink-deep text-pink-deep" : 
+                    "bg-dark-bg border-pink-pale/10 text-pink-pale/20"
                   )}>
                     {isPast ? <CheckCircle2 className="w-6 h-6" /> : <Icon className="w-6 h-6" />}
                   </div>
                   <span className={cn(
                     "text-[10px] uppercase tracking-widest font-bold transition-colors",
-                    isActive ? "text-[#1A1A1A]" : "text-[#1A1A1A]/40"
+                    isActive ? "text-pink-pale" : "text-pink-pale/40"
                   )}>
                     {step.label}
                   </span>
@@ -285,16 +285,16 @@ ${state.report.references.map(ref => `- ${ref}`).join('\n')}
         <div className="grid grid-cols-1 lg:grid-cols-12 gap-12">
           {/* Left Column: Logs & Status */}
           <div className="lg:col-span-4 space-y-8">
-            <div className="bg-white border border-[#1A1A1A]/10 rounded-2xl p-6 shadow-sm">
-              <h2 className="text-xs font-bold uppercase tracking-widest text-[#1A1A1A]/40 mb-4">Agent Status</h2>
+            <div className="bg-dark-surface border border-pink-pale/10 rounded-2xl p-6 shadow-sm">
+              <h2 className="text-xs font-bold uppercase tracking-widest text-pink-pale/40 mb-4">Agent Status</h2>
               <div className="space-y-4">
                 {state.status === 'idle' && (
-                  <p className="text-sm text-[#1A1A1A]/60 italic">Enter a topic to begin the multi-agent research workflow.</p>
+                  <p className="text-sm text-pink-pale/60 italic">Enter a topic to begin the multi-agent research workflow.</p>
                 )}
                 {state.status !== 'idle' && (
                   <div className="flex items-center gap-3">
                     {state.status !== 'completed' && state.status !== 'error' && (
-                      <Loader2 className="w-4 h-4 animate-spin text-[#1A1A1A]" />
+                      <Loader2 className="w-4 h-4 animate-spin text-pink-deep" />
                     )}
                     <span className="text-sm font-medium capitalize">
                       {state.status.replace('-', ' ')}...
@@ -302,11 +302,11 @@ ${state.report.references.map(ref => `- ${ref}`).join('\n')}
                   </div>
                 )}
                 {state.error && (
-                  <div className="p-4 bg-red-50 border border-red-100 rounded-xl flex gap-3 items-start animate-in fade-in slide-in-from-top-2">
-                    <AlertCircle className="w-4 h-4 text-red-500 shrink-0 mt-0.5" />
+                  <div className="p-4 bg-pink-deep/10 border border-pink-deep/20 rounded-xl flex gap-3 items-start animate-in fade-in slide-in-from-top-2">
+                    <AlertCircle className="w-4 h-4 text-pink-deep shrink-0 mt-0.5" />
                     <div>
-                      <p className="text-xs font-bold text-red-600 mb-1">Error Occurred</p>
-                      <p className="text-xs text-red-600 leading-relaxed">{state.error}</p>
+                      <p className="text-xs font-bold text-pink-deep mb-1">Error Occurred</p>
+                      <p className="text-xs text-pink-pale/80 leading-relaxed">{state.error}</p>
                     </div>
                   </div>
                 )}
@@ -314,27 +314,27 @@ ${state.report.references.map(ref => `- ${ref}`).join('\n')}
             </div>
 
             {state.experiment && (
-              <div className="bg-[#1A1A1A] text-white rounded-2xl p-6 shadow-xl overflow-hidden relative">
-                <div className="absolute top-0 right-0 p-4 opacity-10">
-                  <FlaskConical className="w-24 h-24" />
+              <div className="bg-dark-surface border border-pink-pale/10 text-pink-pale rounded-2xl p-6 shadow-xl overflow-hidden relative">
+                <div className="absolute top-0 right-0 p-4 opacity-5">
+                  <FlaskConical className="w-24 h-24 text-pink-deep" />
                 </div>
-                <h2 className="text-[10px] font-bold uppercase tracking-widest text-white/40 mb-6">ML Metrics (RandomForest)</h2>
+                <h2 className="text-[10px] font-bold uppercase tracking-widest text-pink-pale/40 mb-6">ML Metrics (RandomForest)</h2>
                 <div className="grid grid-cols-2 gap-6">
                   <div>
-                    <div className="text-3xl font-light mb-1">{(state.experiment.accuracy * 100).toFixed(1)}%</div>
-                    <div className="text-[10px] uppercase tracking-wider text-white/40">Accuracy</div>
+                    <div className="text-3xl font-light mb-1 text-pink-deep">{(state.experiment.accuracy * 100).toFixed(1)}%</div>
+                    <div className="text-[10px] uppercase tracking-wider text-pink-pale/40">Accuracy</div>
                   </div>
                   <div>
-                    <div className="text-3xl font-light mb-1">{(state.experiment.f1Score * 100).toFixed(1)}%</div>
-                    <div className="text-[10px] uppercase tracking-wider text-white/40">F1 Score</div>
+                    <div className="text-3xl font-light mb-1 text-pink-deep">{(state.experiment.f1Score * 100).toFixed(1)}%</div>
+                    <div className="text-[10px] uppercase tracking-wider text-pink-pale/40">F1 Score</div>
                   </div>
                 </div>
-                <div className="mt-8 pt-6 border-t border-white/10">
-                  <div className="text-[10px] uppercase tracking-widest text-white/40 mb-3">Execution Logs</div>
-                  <div className="space-y-2 font-mono text-[10px] text-white/60">
+                <div className="mt-8 pt-6 border-t border-pink-pale/10">
+                  <div className="text-[10px] uppercase tracking-widest text-pink-pale/40 mb-3">Execution Logs</div>
+                  <div className="space-y-2 font-mono text-[10px] text-pink-pale/60">
                     {state.experiment.logs.map((log, i) => (
                       <div key={i} className="flex gap-2">
-                        <span className="text-white/20">[{i+1}]</span>
+                        <span className="text-pink-deep/40">[{i+1}]</span>
                         <span>{log}</span>
                       </div>
                     ))}
@@ -356,43 +356,43 @@ ${state.report.references.map(ref => `- ${ref}`).join('\n')}
                 >
                   <div className="flex items-center justify-between">
                     <h2 className="text-2xl font-serif italic">Literature Review</h2>
-                    <span className="text-[10px] font-bold uppercase tracking-widest text-[#1A1A1A]/40">LiteratureAgent</span>
+                    <span className="text-[10px] font-bold uppercase tracking-widest text-pink-pale/40">LiteratureAgent</span>
                   </div>
                   <div className="space-y-4">
                     {state.papers.map((paper, i) => (
-                      <div key={i} className="group p-6 bg-white border border-[#1A1A1A]/10 rounded-2xl hover:border-[#1A1A1A]/30 transition-all">
+                      <div key={paper.link} className="group p-6 bg-dark-surface border border-pink-pale/10 rounded-2xl hover:border-pink-deep/30 transition-all">
                         <div className="flex justify-between items-start gap-4 mb-3">
-                          <h3 className="font-semibold text-lg leading-tight group-hover:underline decoration-[#1A1A1A]/20 underline-offset-4">
+                          <h3 className="font-semibold text-lg leading-tight group-hover:text-pink-deep transition-colors">
                             {paper.title}
                           </h3>
                           <div className="flex gap-2">
                             <button 
                               onClick={() => copyToClipboard(paper.citation, i)}
-                              className="text-[#1A1A1A]/40 hover:text-[#1A1A1A] transition-colors p-1"
+                              className="text-pink-pale/40 hover:text-pink-deep transition-colors p-1"
                               title="Copy Citation"
                             >
                               {copiedIndex === i ? <CheckCircle2 className="w-4 h-4 text-emerald-500" /> : <Copy className="w-4 h-4" />}
                             </button>
-                            <a href={paper.link} target="_blank" rel="noreferrer" className="text-[#1A1A1A]/40 hover:text-[#1A1A1A] p-1">
+                            <a href={paper.link} target="_blank" rel="noreferrer" className="text-pink-pale/40 hover:text-pink-deep p-1">
                               <ExternalLink className="w-4 h-4" />
                             </a>
                           </div>
                         </div>
-                        <p className="text-sm text-[#1A1A1A]/70 line-clamp-3 mb-4 leading-relaxed">{paper.summary}</p>
+                        <p className="text-sm text-pink-pale/60 line-clamp-3 mb-4 leading-relaxed">{paper.summary}</p>
                         
-                        <div className="mb-4 p-3 bg-[#F5F5F5] rounded-xl">
-                          <div className="text-[9px] uppercase tracking-widest font-bold text-[#1A1A1A]/30 mb-1">Citation</div>
-                          <div className="text-[11px] text-[#1A1A1A]/60 font-mono leading-relaxed">{paper.citation}</div>
+                        <div className="mb-4 p-3 bg-dark-bg rounded-xl">
+                          <div className="text-[9px] uppercase tracking-widest font-bold text-pink-pale/20 mb-1">Citation</div>
+                          <div className="text-[11px] text-pink-pale/40 font-mono leading-relaxed">{paper.citation}</div>
                         </div>
 
                         <div className="flex flex-wrap gap-2">
                           {paper.authors.slice(0, 3).map((author, j) => (
-                            <span key={j} className="text-[10px] px-2 py-1 bg-[#F5F5F5] rounded-md text-[#1A1A1A]/60 font-medium uppercase tracking-wider">
+                            <span key={`${paper.link}-auth-${j}`} className="text-[10px] px-2 py-1 bg-dark-bg rounded-md text-pink-pale/40 font-medium uppercase tracking-wider">
                               {author}
                             </span>
                           ))}
                           {paper.authors.length > 3 && (
-                            <span className="text-[10px] px-2 py-1 text-[#1A1A1A]/40 font-medium italic">
+                            <span className="text-[10px] px-2 py-1 text-pink-pale/20 font-medium italic">
                               + {paper.authors.length - 3} more
                             </span>
                           )}
@@ -408,24 +408,24 @@ ${state.report.references.map(ref => `- ${ref}`).join('\n')}
                 <motion.section 
                   initial={{ opacity: 0, y: 20 }}
                   animate={{ opacity: 1, y: 0 }}
-                  className="space-y-6 pt-12 border-t border-[#1A1A1A]/10"
+                  className="space-y-6 pt-12 border-t border-pink-pale/10"
                 >
                   <div className="flex items-center justify-between">
                     <h2 className="text-2xl font-serif italic">Proposed Hypothesis</h2>
-                    <span className="text-[10px] font-bold uppercase tracking-widest text-[#1A1A1A]/40">HypothesisAgent</span>
+                    <span className="text-[10px] font-bold uppercase tracking-widest text-pink-pale/40">HypothesisAgent</span>
                   </div>
-                  <div className="bg-[#1A1A1A] text-white p-8 rounded-3xl shadow-2xl">
-                    <h3 className="text-xl font-medium mb-4">{state.hypothesis.title}</h3>
-                    <p className="text-white/80 leading-relaxed mb-8">{state.hypothesis.description}</p>
+                  <div className="bg-dark-surface border border-pink-pale/10 text-pink-pale p-8 rounded-3xl shadow-2xl">
+                    <h3 className="text-xl font-medium mb-4 text-pink-deep">{state.hypothesis.title}</h3>
+                    <p className="text-pink-pale/80 leading-relaxed mb-8">{state.hypothesis.description}</p>
                     
                     <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
                       <div>
-                        <h4 className="text-[10px] uppercase tracking-widest text-white/40 mb-2">Rationale</h4>
-                        <p className="text-sm text-white/70 leading-relaxed">{state.hypothesis.rationale}</p>
+                        <h4 className="text-[10px] uppercase tracking-widest text-pink-pale/40 mb-2">Rationale</h4>
+                        <p className="text-sm text-pink-pale/60 leading-relaxed">{state.hypothesis.rationale}</p>
                       </div>
                       <div>
-                        <h4 className="text-[10px] uppercase tracking-widest text-white/40 mb-2">Expected Outcome</h4>
-                        <p className="text-sm text-white/70 leading-relaxed">{state.hypothesis.expectedOutcome}</p>
+                        <h4 className="text-[10px] uppercase tracking-widest text-pink-pale/40 mb-2">Expected Outcome</h4>
+                        <p className="text-sm text-pink-pale/60 leading-relaxed">{state.hypothesis.expectedOutcome}</p>
                       </div>
                     </div>
                   </div>
@@ -437,47 +437,47 @@ ${state.report.references.map(ref => `- ${ref}`).join('\n')}
                 <motion.section 
                   initial={{ opacity: 0, y: 20 }}
                   animate={{ opacity: 1, y: 0 }}
-                  className="space-y-6 pt-12 border-t border-[#1A1A1A]/10"
+                  className="space-y-6 pt-12 border-t border-pink-pale/10"
                 >
                   <div className="flex items-center justify-between">
                     <div className="flex items-center gap-3">
                       <h2 className="text-2xl font-serif italic">Peer Critique</h2>
-                      <span className="text-[10px] text-[#1A1A1A]/40 font-mono">(Iteration {state.iteration})</span>
+                      <span className="text-[10px] text-pink-pale/40 font-mono">(Iteration {state.iteration})</span>
                       {state.critique.isReliable ? (
-                        <span className="px-2 py-0.5 bg-emerald-100 text-emerald-700 text-[10px] font-bold rounded uppercase tracking-wider">Reliable</span>
+                        <span className="px-2 py-0.5 bg-emerald-900/30 text-emerald-400 text-[10px] font-bold rounded uppercase tracking-wider border border-emerald-500/20">Reliable</span>
                       ) : (
-                        <span className="px-2 py-0.5 bg-amber-100 text-amber-700 text-[10px] font-bold rounded uppercase tracking-wider">Needs Improvement</span>
+                        <span className="px-2 py-0.5 bg-amber-900/30 text-amber-400 text-[10px] font-bold rounded uppercase tracking-wider border border-amber-500/20">Needs Improvement</span>
                       )}
                     </div>
-                    <span className="text-[10px] font-bold uppercase tracking-widest text-[#1A1A1A]/40">CriticAgent</span>
+                    <span className="text-[10px] font-bold uppercase tracking-widest text-pink-pale/40">CriticAgent</span>
                   </div>
                   <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-                    <div className="p-6 bg-emerald-50 border border-emerald-100 rounded-2xl">
-                      <h4 className="text-[10px] uppercase tracking-widest text-emerald-600 font-bold mb-4">Strengths</h4>
+                    <div className="p-6 bg-emerald-900/10 border border-emerald-500/20 rounded-2xl">
+                      <h4 className="text-[10px] uppercase tracking-widest text-emerald-400 font-bold mb-4">Strengths</h4>
                       <ul className="space-y-2">
                         {state.critique.strengths.map((s, i) => (
-                          <li key={i} className="text-sm text-emerald-800 flex gap-2">
-                            <span className="text-emerald-400">•</span> {s}
+                          <li key={i} className="text-sm text-emerald-100/70 flex gap-2">
+                            <span className="text-emerald-500">•</span> {s}
                           </li>
                         ))}
                       </ul>
                     </div>
-                    <div className="p-6 bg-amber-50 border border-amber-100 rounded-2xl">
-                      <h4 className="text-[10px] uppercase tracking-widest text-amber-600 font-bold mb-4">Weaknesses</h4>
+                    <div className="p-6 bg-amber-900/10 border border-amber-500/20 rounded-2xl">
+                      <h4 className="text-[10px] uppercase tracking-widest text-amber-400 font-bold mb-4">Weaknesses</h4>
                       <ul className="space-y-2">
                         {state.critique.weaknesses.map((w, i) => (
-                          <li key={i} className="text-sm text-amber-800 flex gap-2">
-                            <span className="text-amber-400">•</span> {w}
+                          <li key={i} className="text-sm text-amber-100/70 flex gap-2">
+                            <span className="text-amber-500">•</span> {w}
                           </li>
                         ))}
                       </ul>
                     </div>
                   </div>
-                  <div className="p-6 bg-white border border-[#1A1A1A]/10 rounded-2xl">
-                    <h4 className="text-[10px] uppercase tracking-widest text-[#1A1A1A]/40 font-bold mb-4">Future Suggestions</h4>
+                  <div className="p-6 bg-dark-surface border border-pink-pale/10 rounded-2xl">
+                    <h4 className="text-[10px] uppercase tracking-widest text-pink-pale/40 font-bold mb-4">Future Suggestions</h4>
                     <div className="flex flex-wrap gap-2">
                       {state.critique.suggestions.map((s, i) => (
-                        <span key={i} className="px-3 py-1 bg-[#F5F5F5] rounded-full text-xs text-[#1A1A1A]/70">
+                        <span key={i} className="px-3 py-1 bg-dark-bg rounded-full text-xs text-pink-pale/60 border border-pink-pale/5">
                           {s}
                         </span>
                       ))}
@@ -498,50 +498,50 @@ ${state.report.references.map(ref => `- ${ref}`).join('\n')}
                     <span className="text-[10px] font-bold uppercase tracking-widest text-[#1A1A1A]/40">ReportAgent</span>
                   </div>
                   
-                  <div ref={reportRef} className="prose prose-sm max-w-none space-y-8 bg-white p-8 rounded-3xl border border-[#1A1A1A]/5">
+                  <div ref={reportRef} className="prose prose-sm max-w-none space-y-8 bg-dark-surface p-8 rounded-3xl border border-pink-pale/10">
                     <div className="text-center mb-12">
-                      <h1 className="text-4xl font-serif italic mb-2">{state.topic}</h1>
-                      <p className="text-xs uppercase tracking-widest text-[#1A1A1A]/40">Generated by Literature Agent • {new Date().toLocaleDateString()}</p>
+                      <h1 className="text-4xl font-serif italic mb-2 text-pink-deep">{state.topic}</h1>
+                      <p className="text-xs uppercase tracking-widest text-pink-pale/40">Generated by Literature Agent • {new Date().toLocaleDateString()}</p>
                     </div>
 
-                    <div className="bg-[#F5F5F5] p-8 rounded-2xl">
-                      <h3 className="text-xs uppercase tracking-widest font-bold mb-4">Abstract</h3>
-                      <p className="text-lg leading-relaxed font-serif italic text-[#1A1A1A]/80">{state.report.abstract}</p>
+                    <div className="bg-dark-bg p-8 rounded-2xl border border-pink-pale/5">
+                      <h3 className="text-xs uppercase tracking-widest font-bold mb-4 text-pink-deep">Abstract</h3>
+                      <p className="text-lg leading-relaxed font-serif italic text-pink-pale/80">{state.report.abstract}</p>
                     </div>
 
                     <div className="grid grid-cols-1 md:grid-cols-2 gap-12">
                       <section>
-                        <h3 className="text-xs uppercase tracking-widest font-bold mb-4 border-b border-[#1A1A1A]/10 pb-2">Introduction</h3>
-                        <div className="text-sm leading-relaxed text-[#1A1A1A]/70"><Markdown>{state.report.introduction}</Markdown></div>
+                        <h3 className="text-xs uppercase tracking-widest font-bold mb-4 border-b border-pink-pale/10 pb-2 text-pink-deep">Introduction</h3>
+                        <div className="text-sm leading-relaxed text-pink-pale/70 prose-invert"><Markdown>{state.report.introduction}</Markdown></div>
                       </section>
                       <section>
-                        <h3 className="text-xs uppercase tracking-widest font-bold mb-4 border-b border-[#1A1A1A]/10 pb-2">Methodology</h3>
-                        <div className="text-sm leading-relaxed text-[#1A1A1A]/70"><Markdown>{state.report.methodology}</Markdown></div>
+                        <h3 className="text-xs uppercase tracking-widest font-bold mb-4 border-b border-pink-pale/10 pb-2 text-pink-deep">Methodology</h3>
+                        <div className="text-sm leading-relaxed text-pink-pale/70 prose-invert"><Markdown>{state.report.methodology}</Markdown></div>
                       </section>
                     </div>
 
-                    <section className="bg-white border border-[#1A1A1A]/10 p-8 rounded-2xl">
-                      <h3 className="text-xs uppercase tracking-widest font-bold mb-6 text-center">Experimental Results</h3>
-                      <div className="text-sm leading-relaxed text-[#1A1A1A]/70"><Markdown>{state.report.results}</Markdown></div>
+                    <section className="bg-dark-bg border border-pink-pale/10 p-8 rounded-2xl">
+                      <h3 className="text-xs uppercase tracking-widest font-bold mb-6 text-center text-pink-deep">Experimental Results</h3>
+                      <div className="text-sm leading-relaxed text-pink-pale/70 prose-invert"><Markdown>{state.report.results}</Markdown></div>
                     </section>
 
                     <div className="grid grid-cols-1 md:grid-cols-2 gap-12">
                       <section>
-                        <h3 className="text-xs uppercase tracking-widest font-bold mb-4 border-b border-[#1A1A1A]/10 pb-2">Discussion</h3>
-                        <div className="text-sm leading-relaxed text-[#1A1A1A]/70"><Markdown>{state.report.discussion}</Markdown></div>
+                        <h3 className="text-xs uppercase tracking-widest font-bold mb-4 border-b border-pink-pale/10 pb-2 text-pink-deep">Discussion</h3>
+                        <div className="text-sm leading-relaxed text-pink-pale/70 prose-invert"><Markdown>{state.report.discussion}</Markdown></div>
                       </section>
                       <section>
-                        <h3 className="text-xs uppercase tracking-widest font-bold mb-4 border-b border-[#1A1A1A]/10 pb-2">Conclusion</h3>
-                        <div className="text-sm leading-relaxed text-[#1A1A1A]/70"><Markdown>{state.report.conclusion}</Markdown></div>
+                        <h3 className="text-xs uppercase tracking-widest font-bold mb-4 border-b border-pink-pale/10 pb-2 text-pink-deep">Conclusion</h3>
+                        <div className="text-sm leading-relaxed text-pink-pale/70 prose-invert"><Markdown>{state.report.conclusion}</Markdown></div>
                       </section>
                     </div>
 
-                    <section className="pt-8 border-t border-[#1A1A1A]/10">
-                      <h3 className="text-xs uppercase tracking-widest font-bold mb-4">References</h3>
+                    <section className="pt-8 border-t border-pink-pale/10">
+                      <h3 className="text-xs uppercase tracking-widest font-bold mb-4 text-pink-deep">References</h3>
                       <ul className="space-y-2">
                         {state.report.references.map((ref, i) => (
-                          <li key={i} className="text-[11px] text-[#1A1A1A]/50 font-mono leading-relaxed">
-                            [{i+1}] {ref}
+                          <li key={i} className="text-[11px] text-pink-pale/40 font-mono leading-relaxed">
+                            <span className="text-pink-deep">[{i+1}]</span> {ref}
                           </li>
                         ))}
                       </ul>
@@ -551,21 +551,21 @@ ${state.report.references.map(ref => `- ${ref}`).join('\n')}
                   <div className="flex flex-col sm:flex-row justify-center gap-4 pt-12">
                     <button 
                       onClick={exportMarkdown}
-                      className="flex items-center justify-center gap-2 px-8 py-3 bg-white border border-[#1A1A1A]/10 text-[#1A1A1A] rounded-full hover:bg-[#F5F5F5] transition-all shadow-sm"
+                      className="flex items-center justify-center gap-2 px-8 py-3 bg-dark-surface border border-pink-pale/10 text-pink-pale rounded-full hover:bg-dark-bg transition-all shadow-sm"
                     >
                       <FileText className="w-4 h-4" />
                       Export Markdown (.md)
                     </button>
                     <button 
                       onClick={exportPDF}
-                      className="flex items-center justify-center gap-2 px-8 py-3 bg-[#1A1A1A] text-white rounded-full hover:bg-[#333] transition-all shadow-lg"
+                      className="flex items-center justify-center gap-2 px-8 py-3 bg-pink-deep text-white rounded-full hover:bg-pink-deep/90 transition-all shadow-lg shadow-pink-deep/20"
                     >
                       <Download className="w-4 h-4" />
                       Export PDF (.pdf)
                     </button>
                     <button 
                       onClick={() => window.print()}
-                      className="flex items-center justify-center gap-2 px-8 py-3 bg-white border border-[#1A1A1A]/10 text-[#1A1A1A] rounded-full hover:bg-[#F5F5F5] transition-all shadow-sm"
+                      className="flex items-center justify-center gap-2 px-8 py-3 bg-dark-surface border border-pink-pale/10 text-pink-pale rounded-full hover:bg-dark-bg transition-all shadow-sm"
                     >
                       <Printer className="w-4 h-4" />
                       Print
@@ -579,13 +579,13 @@ ${state.report.references.map(ref => `- ${ref}`).join('\n')}
       </main>
 
       {/* Footer */}
-      <footer className="border-t border-[#1A1A1A]/10 py-12 mt-24 bg-white">
+      <footer className="border-t border-pink-pale/10 py-12 mt-24 bg-dark-surface">
         <div className="max-w-6xl mx-auto px-6 flex flex-col md:flex-row items-center justify-between gap-6">
           <div className="flex items-center gap-2 opacity-40">
             <BrainCircuit className="w-4 h-4" />
             <span className="text-[10px] uppercase tracking-widest font-bold">Literature Agent v1.1</span>
           </div>
-          <p className="text-[10px] text-[#1A1A1A]/40 uppercase tracking-widest font-bold">
+          <p className="text-[10px] text-pink-pale/40 uppercase tracking-widest font-bold">
             Powered by Gemini 3.1 & arXiv API
           </p>
         </div>

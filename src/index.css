@@ -5,4 +5,15 @@
   --font-sans: "Inter", ui-sans-serif, system-ui, sans-serif;
   --font-serif: "Cormorant Garamond", serif;
   --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, monospace;
+  
+  --color-pink-pale: #fce4ec;
+  --color-pink-deep: #f06292;
+  --color-dark-bg: #121212;
+  --color-dark-surface: #1e1e1e;
+}
+
+@layer base {
+  body {
+    @apply bg-dark-bg text-pink-pale font-sans;
+  }
 }

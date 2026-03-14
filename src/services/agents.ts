@@ -61,7 +61,8 @@ export const SelectionAgent = {
     }`;
     
     const result = await generateJSON<{ selectedIndices: number[] }>(prompt, "You are an expert bibliometrician and research librarian.");
-    return result.selectedIndices.map(idx => papers[idx]).filter(p => !!p);
+    const uniqueIndices = Array.from(new Set(result.selectedIndices));
+    return uniqueIndices.map(idx => papers[idx]).filter(p => !!p);
   }
 };
 
