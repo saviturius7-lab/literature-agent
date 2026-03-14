@@ -360,7 +360,7 @@ ${state.report.references.map(ref => `- ${ref}`).join('\n')}
                   </div>
                   <div className="space-y-4">
                     {state.papers.map((paper, i) => (
-                      <div key={paper.link} className="group p-6 bg-dark-surface border border-pink-pale/10 rounded-2xl hover:border-pink-deep/30 transition-all">
+                      <div key={`${paper.link}-${i}`} className="group p-6 bg-dark-surface border border-pink-pale/10 rounded-2xl hover:border-pink-deep/30 transition-all">
                         <div className="flex justify-between items-start gap-4 mb-3">
                           <h3 className="font-semibold text-lg leading-tight group-hover:text-pink-deep transition-colors">
                             {paper.title}

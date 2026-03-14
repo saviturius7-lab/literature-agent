@@ -178,6 +178,18 @@ async function withRetry<T>(fn: (attempt: number) => Promise<T>, retries = 15, d
   throw new Error("Max retries reached. All providers and keys failed. Please check your API balances and keys.");
 }
 
+function cleanJSON(text: string): string {
+  // Remove markdown code blocks
+  let cleaned = text.replace(/```json\n?|```/g, "").trim();
+  
+  // Fix common unescaped backslash issues in strings
+  // This regex looks for backslashes that are NOT followed by a valid escape character (", \, /, b, f, n, r, t, uXXXX)
+  // and escapes them.
+  cleaned = cleaned.replace(/\\(?![\\\/bfnrtu"'])/g, "\\\\");
+  
+  return cleaned;
+}
+
 export async function generateJSON<T>(prompt: string, systemInstruction?: string): Promise<T> {
   return withRetry(async (attempt) => {
     const providerIndex = attempt % 3;
@@ -199,7 +211,12 @@ export async function generateJSON<T>(prompt: string, systemInstruction?: string
 
         const text = response.text;
         if (!text) throw new Error("No response from Gemini");
-        return JSON.parse(text) as T;
+        try {
+          return JSON.parse(cleanJSON(text)) as T;
+        } catch (parseError) {
+          console.error("JSON Parse Error (Gemini):", parseError, "Raw text:", text);
+          throw parseError;
+        }
       } catch (e: any) {
         console.error("Gemini failed, moving to next provider...");
         throw e;
@@ -208,7 +225,12 @@ export async function generateJSON<T>(prompt: string, systemInstruction?: string
       console.log(`[Attempt ${attempt}] Using DeepSeek...`);
       try {
         const text = await callDeepSeek(prompt, systemInstruction, true);
-        return JSON.parse(text) as T;
+        try {
+          return JSON.parse(cleanJSON(text)) as T;
+        } catch (parseError) {
+          console.error("JSON Parse Error (DeepSeek):", parseError, "Raw text:", text);
+          throw parseError;
+        }
       } catch (e: any) {
         console.error("DeepSeek failed, moving to next provider...");
         throw e;
@@ -217,7 +239,12 @@ export async function generateJSON<T>(prompt: string, systemInstruction?: string
       console.log(`[Attempt ${attempt}] Using OpenRouter...`);
       try {
         const text = await callOpenRouter(prompt, systemInstruction, true);
-        return JSON.parse(text) as T;
+        try {
+          return JSON.parse(cleanJSON(text)) as T;
+        } catch (parseError) {
+          console.error("JSON Parse Error (OpenRouter):", parseError, "Raw text:", text);
+          throw parseError;
+        }
       } catch (e: any) {
         console.error("OpenRouter failed, moving to next provider...");
         throw e;
