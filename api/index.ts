@@ -9,8 +9,15 @@ app.get("/api/arxiv", async (req, res) => {
   const { q } = req.query;
   if (!q) return res.status(400).json({ error: "Query parameter 'q' is required" });
 
-  const url = `https://export.arxiv.org/api/query?search_query=all:${encodeURIComponent(q as string)}&start=0&max_results=20&sortBy=relevance&sortOrder=descending`;
+  // Use 'all:' prefix if not already present to broaden search across all fields
+  const query = (q as string).startsWith("all:") || (q as string).startsWith("ti:") || (q as string).startsWith("au:") 
+    ? q 
+    : `all:${q}`;
+
+  const url = `https://export.arxiv.org/api/query?search_query=${encodeURIComponent(query as string)}&start=0&max_results=30&sortBy=relevance&sortOrder=descending`;
   
+  console.log(`Proxying arXiv request: ${url}`);
+
   try {
     const response = await fetch(url, {
       headers: {
@@ -28,6 +35,12 @@ app.get("/api/arxiv", async (req, res) => {
     }
 
     const data = await response.text();
+    
+    // Check if we got an empty feed or an error in the XML
+    if (data.includes("<entry>") === false) {
+      console.warn(`ArXiv returned no entries for query: ${query}`);
+    }
+
     res.set("Content-Type", "application/xml");
     res.set("Cache-Control", "s-maxage=3600, stale-while-revalidate=600");
     res.send(data);

@@ -30,9 +30,32 @@ function cosineSimilarity(a: number[], b: number[]): number {
   return dotProduct / (mA * mB);
 }
 
+export const SearchQueryAgent = {
+  async refineQuery(topic: string): Promise<string> {
+    const prompt = `Convert the following research topic into an optimized search query for the arXiv API.
+    The query should be concise and use relevant keywords. 
+    Use boolean operators if necessary (AND, OR).
+    Avoid stop words and conversational filler.
+    
+    Topic: "${topic}"
+    
+    Return a JSON object:
+    {
+      "refinedQuery": "optimized search query"
+    }`;
+    
+    const result = await generateJSON<{ refinedQuery: string }>(prompt, "You are an expert research librarian specializing in academic search optimization.");
+    return result.refinedQuery || topic;
+  }
+};
+
 export const LiteratureAgent = {
   async fetchPapers(topic: string): Promise<Paper[]> {
-    const url = `/api/arxiv?q=${encodeURIComponent(topic)}`;
+    // First, refine the query
+    const refinedQuery = await SearchQueryAgent.refineQuery(topic);
+    console.log(`Refined query: "${refinedQuery}" for topic: "${topic}"`);
+    
+    const url = `/api/arxiv?q=${encodeURIComponent(refinedQuery)}`;
     
     try {
       const response = await fetch(url);
@@ -48,31 +71,49 @@ export const LiteratureAgent = {
       }
       
       const entries = jsonObj.feed.entry;
-      if (!entries) return [];
+      if (!entries) {
+        // If refined query failed, try the original topic as a fallback
+        if (refinedQuery !== topic) {
+          console.log("Refined query returned no results, falling back to original topic...");
+          const fallbackUrl = `/api/arxiv?q=${encodeURIComponent(topic)}`;
+          const fallbackResponse = await fetch(fallbackUrl);
+          if (fallbackResponse.ok) {
+            const fallbackXml = await fallbackResponse.text();
+            const fallbackJson = parser.parse(fallbackXml);
+            const fallbackEntries = fallbackJson?.feed?.entry;
+            if (fallbackEntries) {
+              return this.processEntries(fallbackEntries);
+            }
+          }
+        }
+        return [];
+      }
       
-      const entryList = Array.isArray(entries) ? entries : [entries];
-      
-      const papers = entryList.slice(0, 15).map((entry: any) => {
-        const authors = Array.isArray(entry.author) 
-          ? entry.author.map((a: any) => a.name) 
-          : (entry.author ? [entry.author.name] : ["Unknown Author"]);
-        const year = entry.published ? new Date(entry.published).getFullYear() : "n.d.";
-        
-        return {
-          title: (entry.title || "Untitled").replace(/\n/g, " ").trim(),
-          summary: (entry.summary || "No summary available").replace(/\n/g, " ").trim(),
-          authors,
-          published: entry.published || new Date().toISOString(),
-          link: entry.id || "#",
-          citation: `${authors.join(", ")} (${year}). ${(entry.title || "Untitled").trim()}. arXiv:${(entry.id || "").split('/').pop()}`
-        };
-      });
-
-      return papers;
+      return this.processEntries(entries);
     } catch (error: any) {
       console.error("LiteratureAgent error:", error);
       throw new Error(`Research workflow error: ${error.message || "Failed to fetch from arXiv via proxy. Please try again."}`);
     }
+  },
+
+  processEntries(entries: any): Paper[] {
+    const entryList = Array.isArray(entries) ? entries : [entries];
+    
+    return entryList.slice(0, 15).map((entry: any) => {
+      const authors = Array.isArray(entry.author) 
+        ? entry.author.map((a: any) => a.name) 
+        : (entry.author ? [entry.author.name] : ["Unknown Author"]);
+      const year = entry.published ? new Date(entry.published).getFullYear() : "n.d.";
+      
+      return {
+        title: (entry.title || "Untitled").replace(/\n/g, " ").trim(),
+        summary: (entry.summary || "No summary available").replace(/\n/g, " ").trim(),
+        authors,
+        published: entry.published || new Date().toISOString(),
+        link: entry.id || "#",
+        citation: `${authors.join(", ")} (${year}). ${(entry.title || "Untitled").trim()}. arXiv:${(entry.id || "").split('/').pop()}`
+      };
+    });
   }
 };
 
