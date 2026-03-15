@@ -127,23 +127,26 @@ export default function App() {
         // 2. Hypothesis Agent
         let hypothesis = await HypothesisAgent.generateHypothesis(inputTopic, papers);
         
-        // 2b. Novelty Checker (Loop up to 3 times)
+        // 2b. Novelty Checker (Loop up to 5 times)
         let noveltyAttempts = 0;
+        const MAX_NOVELTY_ATTEMPTS = 5;
         let isNovel = false;
-        while (!isNovel && noveltyAttempts < 3) {
+        let noveltyFeedback = "";
+        while (!isNovel && noveltyAttempts < MAX_NOVELTY_ATTEMPTS) {
           setState(prev => ({ ...prev, status: 'checking_novelty', hypothesis }));
-          const novelty = await NoveltyCheckerAgent.checkNovelty(hypothesis, papers);
+          const novelty = await NoveltyCheckerAgent.checkNovelty(hypothesis, papers, noveltyAttempts);
           isNovel = novelty.isNovel;
+          noveltyFeedback = novelty.feedback || "";
           
           if (!isNovel) {
             console.log(`Hypothesis not novel enough (Attempt ${noveltyAttempts + 1}), regenerating...`);
-            hypothesis = await HypothesisAgent.generateHypothesis(inputTopic, papers);
+            hypothesis = await HypothesisAgent.generateHypothesis(inputTopic, papers, noveltyFeedback);
             noveltyAttempts++;
           }
         }
 
         if (!isNovel) {
-          throw new Error("Failed to generate a sufficiently novel hypothesis after 3 attempts.");
+          throw new Error(`Failed to generate a sufficiently novel hypothesis after ${MAX_NOVELTY_ATTEMPTS} attempts.`);
         }
 
         // 2c. Contribution Agent

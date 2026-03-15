@@ -160,13 +160,15 @@ export const SelectionAgent = {
 };
 
 export const HypothesisAgent = {
-  async generateHypothesis(topic: string, papers: Paper[]): Promise<Hypothesis> {
+  async generateHypothesis(topic: string, papers: Paper[], feedback?: string): Promise<Hypothesis> {
     const papersContext = papers.map((p, i) => `Paper [${i+1}]: ${p.title}\nSummary: ${p.summary}`).join("\n\n");
     const prompt = `Based STRICTLY on the following research papers about "${topic}", propose a novel research hypothesis.
     Do NOT invent information that is not supported by or extrapolated from these specific papers.
     
     Papers:
     ${papersContext}
+    
+    ${feedback ? `PREVIOUS ATTEMPT FEEDBACK: ${feedback}\nPlease adjust your hypothesis to be more novel and distinct from existing work.` : ""}
     
     Return a JSON object with:
     {
@@ -181,7 +183,7 @@ export const HypothesisAgent = {
 };
 
 export const NoveltyCheckerAgent = {
-  async checkNovelty(hypothesis: Hypothesis, papers: Paper[]): Promise<{ isNovel: boolean; similarity: number; mostSimilarPaper?: string }> {
+  async checkNovelty(hypothesis: Hypothesis, papers: Paper[], attempt: number = 0): Promise<{ isNovel: boolean; similarity: number; mostSimilarPaper?: string; feedback?: string }> {
     const hypothesisEmbedding = await embedText(`${hypothesis.title} ${hypothesis.description}`);
     let maxSimilarity = -1;
     let mostSimilarPaper = "";
@@ -195,11 +197,20 @@ export const NoveltyCheckerAgent = {
       }
     }
 
-    const threshold = 0.85;
+    // Adaptive threshold: starts at 0.85, increases by 0.02 per attempt up to 0.93
+    const threshold = Math.min(0.93, 0.85 + (attempt * 0.02));
+    const isNovel = maxSimilarity < threshold;
+    
+    let feedback = "";
+    if (!isNovel) {
+      feedback = `The hypothesis is too similar to the existing paper: "${mostSimilarPaper}" (Similarity score: ${maxSimilarity.toFixed(2)}, Threshold: ${threshold.toFixed(2)}). Try to find a different angle or a gap that this paper doesn't address.`;
+    }
+
     return {
-      isNovel: maxSimilarity < threshold,
+      isNovel,
       similarity: maxSimilarity,
-      mostSimilarPaper
+      mostSimilarPaper,
+      feedback
     };
   }
 };
