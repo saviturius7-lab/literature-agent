@@ -424,12 +424,28 @@ ${(state.report.references || []).map(ref => `- ${ref}`).join('\n')}
                   </div>
                 )}
                 {state.error && (
-                  <div className="p-4 bg-pink-deep/10 border border-pink-deep/20 rounded-xl flex gap-3 items-start animate-in fade-in slide-in-from-top-2">
-                    <AlertCircle className="w-4 h-4 text-pink-deep shrink-0 mt-0.5" />
-                    <div>
-                      <p className="text-xs font-bold text-pink-deep mb-1">Error Occurred</p>
-                      <p className="text-xs text-pink-pale/80 leading-relaxed">{state.error}</p>
+                  <div className="p-4 bg-pink-deep/10 border border-pink-deep/20 rounded-xl flex flex-col gap-3 animate-in fade-in slide-in-from-top-2">
+                    <div className="flex gap-3 items-start">
+                      <AlertCircle className="w-4 h-4 text-pink-deep shrink-0 mt-0.5" />
+                      <div>
+                        <p className="text-xs font-bold text-pink-deep mb-1">Error Occurred</p>
+                        <p className="text-xs text-pink-pale/80 leading-relaxed">{state.error}</p>
+                      </div>
                     </div>
+                    {(state.error.includes("API key") || state.error.includes("PERMISSION_DENIED") || state.error.includes("Balance") || state.error.includes("Unauthorized") || state.error.includes("RESOURCE_EXHAUSTED") || state.error.includes("429") || state.error.includes("quota")) && (
+                      <div className="p-3 bg-dark-bg/50 rounded-lg border border-pink-deep/10">
+                        <p className="text-[9px] text-pink-deep font-bold uppercase tracking-wider mb-1">Troubleshooting Advice:</p>
+                        <p className="text-[10px] text-pink-pale/60 leading-relaxed">
+                          It looks like there's an issue with your API keys, account balance, or rate limits. 
+                          The app is automatically rotating through your keys, but you may need to:
+                        </p>
+                        <ul className="text-[10px] text-pink-pale/40 mt-2 list-disc list-inside space-y-1">
+                          <li>Ensure <strong>GEMINI_API_KEYS</strong> are valid and not expired.</li>
+                          <li>Add more keys to your rotation (up to 20) to bypass rate limits.</li>
+                          <li>Check if your keys have hit their daily free-tier quota.</li>
+                        </ul>
+                      </div>
+                    )}
                   </div>
                 )}
               </div>

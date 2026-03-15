@@ -3,19 +3,19 @@ async function withRetry<T>(fn: (attempt: number) => Promise<T>, retries = 15, d
     try {
       return await fn(i);
     } catch (error: any) {
-      const isRateLimit = error.message?.includes("429") || 
-                          error.status === 429 || 
-                          error.message?.includes("RESOURCE_EXHAUSTED") ||
-                          (typeof error === 'string' && error.includes("429"));
+      const status = error.status || 0;
+      const message = error.message || "";
       
-      const isAuthError = error.message?.includes("401");
-      const isBalanceError = error.message?.includes("402");
+      const isRateLimit = message.includes("429") || status === 429 || message.includes("RESOURCE_EXHAUSTED");
+      const isAuthError = message.includes("401") || status === 401;
+      const isBalanceError = message.includes("402") || status === 402;
+      const isServerError = message.includes("500") || status === 500;
                           
-      if (i < retries - 1 && (isRateLimit || isAuthError || isBalanceError)) {
-        const reason = isRateLimit ? "Rate limit" : isAuthError ? "Auth error" : "Balance error";
+      if (i < retries - 1 && (isRateLimit || isAuthError || isBalanceError || isServerError)) {
+        const reason = isRateLimit ? "Rate limit" : isAuthError ? "Auth error" : isBalanceError ? "Balance error" : "Server error";
         console.warn(`${reason} hit (attempt ${i + 1}), retrying with different provider/key...`);
         
-        if (isRateLimit) {
+        if (isRateLimit || isServerError) {
           await new Promise(resolve => setTimeout(resolve, delay));
           delay *= 1.5;
         }
@@ -24,7 +24,7 @@ async function withRetry<T>(fn: (attempt: number) => Promise<T>, retries = 15, d
       throw error;
     }
   }
-  throw new Error("Max retries reached. All providers and keys failed. Please check your API balances and keys.");
+  throw new Error("Max retries reached. All providers and keys failed. Please check your API balances and keys in the environment variables.");
 }
 
 export async function embedText(text: string): Promise<number[]> {
@@ -34,7 +34,12 @@ export async function embedText(text: string): Promise<number[]> {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ text })
     });
-    if (!response.ok) throw new Error(`Embed failed: ${response.status}`);
+    if (!response.ok) {
+      const errorData = await response.json().catch(() => ({}));
+      const error = new Error(errorData.error || `Embed failed: ${response.status}`);
+      (error as any).status = response.status;
+      throw error;
+    }
     const data = await response.json();
     return data.embedding;
   });
@@ -47,7 +52,12 @@ export async function generateJSON<T>(prompt: string, systemInstruction?: string
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ prompt, systemInstruction, attempt })
     });
-    if (!response.ok) throw new Error(`Generate JSON failed: ${response.status}`);
+    if (!response.ok) {
+      const errorData = await response.json().catch(() => ({}));
+      const error = new Error(errorData.error || `Generate JSON failed: ${response.status}`);
+      (error as any).status = response.status;
+      throw error;
+    }
     const data = await response.json();
     return JSON.parse(data.text) as T;
   });
@@ -60,7 +70,12 @@ export async function generateText(prompt: string, systemInstruction?: string): 
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ prompt, systemInstruction, attempt })
     });
-    if (!response.ok) throw new Error(`Generate Text failed: ${response.status}`);
+    if (!response.ok) {
+      const errorData = await response.json().catch(() => ({}));
+      const error = new Error(errorData.error || `Generate Text failed: ${response.status}`);
+      (error as any).status = response.status;
+      throw error;
+    }
     const data = await response.json();
     return data.text;
   });

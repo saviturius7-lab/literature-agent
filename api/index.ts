@@ -6,70 +6,133 @@ const app = express();
 app.use(express.json());
 const PORT = 3000;
 
-// Helper to collect keys from both comma-separated lists and numbered variables (e.g., GEMINI_API_KEY_1)
+// In-memory blacklists
+const fatalKeys = new Set<string>();
+const quotaKeys = new Map<string, number>(); // key -> expiry timestamp
+
+// Helper to collect keys from both comma-separated lists and numbered variables
 function collectKeys(baseName: string): string[] {
   const keys: string[] = [];
   
-  // 1. Check for comma-separated list (e.g., GEMINI_API_KEYS)
   const listName = `${baseName}S`;
   if (process.env[listName]) {
     process.env[listName]?.split(",").forEach(k => {
       const trimmed = k.trim();
-      if (trimmed) keys.push(trimmed);
+      // Filter out empty strings and common placeholders
+      if (trimmed && !trimmed.includes("TODO") && !trimmed.startsWith("YOUR_") && trimmed.length > 10) {
+        keys.push(trimmed);
+      }
     });
   }
 
-  // 2. Check for individual numbered variables (e.g., GEMINI_API_KEY_1 to 20)
   for (let i = 1; i <= 20; i++) {
     const keyName = `${baseName}_${i}`;
-    if (process.env[keyName]) {
-      keys.push(process.env[keyName]!.trim());
+    const val = process.env[keyName]?.trim();
+    if (val && !val.includes("TODO") && !val.startsWith("YOUR_") && val.length > 10) {
+      keys.push(val);
     }
   }
 
-  // 3. Check for the single default variable (e.g., GEMINI_API_KEY)
-  if (process.env[baseName] && !keys.includes(process.env[baseName]!.trim())) {
-    keys.push(process.env[baseName]!.trim());
+  const defaultVal = process.env[baseName]?.trim();
+  if (defaultVal && !defaultVal.includes("TODO") && !defaultVal.startsWith("YOUR_") && defaultVal.length > 10 && !keys.includes(defaultVal)) {
+    keys.push(defaultVal);
   }
 
-  return Array.from(new Set(keys)); // Remove duplicates
+  return Array.from(new Set(keys));
+}
+
+function getAvailableKeys(allKeys: string[]): string[] {
+  const now = Date.now();
+  return allKeys.filter(k => {
+    if (fatalKeys.has(k)) return false;
+    const quotaExpiry = quotaKeys.get(k);
+    if (quotaExpiry && now < quotaExpiry) return false;
+    return true;
+  });
 }
 
 // API Keys from Environment Variables
-const geminiKeys = collectKeys("GEMINI_API_KEY");
-const deepSeekKeys = collectKeys("DEEPSEEK_API_KEY");
-const openRouterKeys = collectKeys("OPENROUTER_API_KEY");
+const allGeminiKeys = collectKeys("GEMINI_API_KEY");
 
 let currentGeminiKeyIndex = 0;
-let currentDeepSeekKeyIndex = 0;
-let currentOpenRouterKeyIndex = 0;
-
-const openRouterModels = [
-  "google/gemini-pro-1.5",
-  "anthropic/claude-3.5-sonnet",
-  "openai/gpt-4o",
-  "meta-llama/llama-3.1-70b-instruct"
-];
 
 function getGeminiAI() {
-  if (geminiKeys.length === 0) throw new Error("GEMINI_API_KEYS not configured on server");
-  const apiKey = geminiKeys[currentGeminiKeyIndex % geminiKeys.length];
+  const available = getAvailableKeys(allGeminiKeys);
+  if (available.length === 0) return null;
+  const apiKey = available[currentGeminiKeyIndex % available.length];
   currentGeminiKeyIndex++;
-  return new GoogleGenAI({ apiKey });
+  return { ai: new GoogleGenAI({ apiKey }), key: apiKey };
 }
 
-function getDeepSeekKey() {
-  if (deepSeekKeys.length === 0) throw new Error("DEEPSEEK_API_KEYS not configured on server");
-  const key = deepSeekKeys[currentDeepSeekKeyIndex % deepSeekKeys.length];
-  currentDeepSeekKeyIndex++;
-  return key;
-}
+async function withRetry<T>(fn: (ai: any) => Promise<T>): Promise<T> {
+  let lastError: any;
+  const attemptedKeys = new Set<string>();
+  const maxAttempts = Math.max(allGeminiKeys.length, 1);
 
-function getOpenRouterKey() {
-  if (openRouterKeys.length === 0) throw new Error("OPENROUTER_API_KEYS not configured on server");
-  const key = openRouterKeys[currentOpenRouterKeyIndex % openRouterKeys.length];
-  currentOpenRouterKeyIndex++;
-  return key;
+  for (let i = 0; i < maxAttempts; i++) {
+    const available = getAvailableKeys(allGeminiKeys);
+    if (available.length === 0) {
+      // If all keys are in quota cooldown, try the oldest one anyway if we have no other choice
+      if (fatalKeys.size < allGeminiKeys.length) {
+        const sortedQuotaKeys = Array.from(quotaKeys.entries()).sort((a, b) => a[1] - b[1]);
+        if (sortedQuotaKeys.length > 0) {
+          const [key] = sortedQuotaKeys[0];
+          console.log(`[Backend] All keys exhausted/quota-limited. Forcing retry with oldest quota key.`);
+          const ai = new GoogleGenAI({ apiKey: key });
+          try {
+            return await fn(ai);
+          } catch (err) {
+            lastError = err;
+            continue;
+          }
+        }
+      }
+      throw new Error("No valid GEMINI_API_KEYS available (all failed, expired, or none configured)");
+    }
+
+    const gemini = getGeminiAI();
+    if (!gemini) break;
+
+    const { ai, key } = gemini;
+    if (attemptedKeys.has(key)) continue;
+    attemptedKeys.add(key);
+
+    try {
+      return await fn(ai);
+    } catch (error: any) {
+      lastError = error;
+      const msg = typeof error.message === 'string' ? error.message : JSON.stringify(error);
+      
+      const isFatal = 
+        msg.includes("PERMISSION_DENIED") || 
+        msg.includes("API key") || 
+        msg.includes("leaked") ||
+        msg.includes("expired") ||
+        msg.includes("INVALID_ARGUMENT") ||
+        msg.includes("API_KEY_INVALID");
+
+      const isQuota = 
+        msg.includes("RESOURCE_EXHAUSTED") || 
+        msg.includes("429") || 
+        msg.includes("quota");
+
+      if (isFatal) {
+        fatalKeys.add(key);
+        console.warn(`[Backend] Fatal error with Gemini key. Blacklisting permanently. Attempt ${i + 1}/${maxAttempts}`);
+        continue;
+      }
+
+      if (isQuota) {
+        // Quota hit: Cooldown for 60 seconds
+        quotaKeys.set(key, Date.now() + 60000);
+        console.warn(`[Backend] Quota exceeded for Gemini key. Cooldown for 60s. Attempt ${i + 1}/${maxAttempts}`);
+        continue;
+      }
+
+      throw error;
+    }
+  }
+  throw lastError || new Error("Request failed after trying all available keys.");
 }
 
 function cleanJSON(text: string): string {
@@ -131,108 +194,40 @@ app.get("/api/arxiv", async (req, res) => {
 
 app.post("/api/generate-json", async (req, res) => {
   const { prompt, systemInstruction, attempt = 0 } = req.body;
-  const providerIndex = attempt % 3;
 
   try {
-    if (providerIndex === 0 && geminiKeys.length > 0) {
-      const ai = getGeminiAI();
+    const result = await withRetry(async (ai) => {
       const model = attempt % 2 === 0 ? "gemini-3-flash-preview" : "gemini-3.1-pro-preview";
       const response = await ai.models.generateContent({
         model,
         contents: prompt,
         config: { systemInstruction, responseMimeType: "application/json" },
       });
-      return res.json({ text: cleanJSON(response.text || "{}") });
-    } else if (providerIndex === 1 && deepSeekKeys.length > 0) {
-      const apiKey = getDeepSeekKey();
-      const response = await fetch("https://api.deepseek.com/chat/completions", {
-        method: "POST",
-        headers: { "Authorization": `Bearer ${apiKey}`, "Content-Type": "application/json" },
-        body: JSON.stringify({
-          model: "deepseek-chat",
-          messages: [
-            ...(systemInstruction ? [{ role: "system", content: systemInstruction }] : []),
-            { role: "user", content: prompt }
-          ],
-          response_format: { type: "json_object" },
-          temperature: 0.7
-        })
-      });
-      const data = await response.json();
-      return res.json({ text: cleanJSON(data.choices[0].message.content) });
-    } else if (openRouterKeys.length > 0) {
-      const apiKey = getOpenRouterKey();
-      const model = openRouterModels[Math.floor(Math.random() * openRouterModels.length)];
-      const response = await fetch("https://openrouter.ai/api/v1/chat/completions", {
-        method: "POST",
-        headers: { "Authorization": `Bearer ${apiKey}`, "Content-Type": "application/json" },
-        body: JSON.stringify({
-          model,
-          messages: [
-            ...(systemInstruction ? [{ role: "system", content: systemInstruction }] : []),
-            { role: "user", content: prompt }
-          ],
-          response_format: { type: "json_object" }
-        })
-      });
-      const data = await response.json();
-      return res.json({ text: cleanJSON(data.choices[0].message.content) });
-    }
-    throw new Error("No available provider for JSON generation");
+      return cleanJSON(response.text || "{}");
+    });
+    return res.json({ text: result });
   } catch (error: any) {
+    console.error(`[Backend] Generate JSON Error:`, error.message);
     res.status(500).json({ error: error.message });
   }
 });
 
 app.post("/api/generate-text", async (req, res) => {
   const { prompt, systemInstruction, attempt = 0 } = req.body;
-  const providerIndex = attempt % 3;
 
   try {
-    if (providerIndex === 0 && geminiKeys.length > 0) {
-      const ai = getGeminiAI();
+    const result = await withRetry(async (ai) => {
       const model = attempt % 2 === 0 ? "gemini-3-flash-preview" : "gemini-3.1-pro-preview";
       const response = await ai.models.generateContent({
         model,
         contents: prompt,
         config: { systemInstruction },
       });
-      return res.json({ text: response.text || "" });
-    } else if (providerIndex === 1 && deepSeekKeys.length > 0) {
-      const apiKey = getDeepSeekKey();
-      const response = await fetch("https://api.deepseek.com/chat/completions", {
-        method: "POST",
-        headers: { "Authorization": `Bearer ${apiKey}`, "Content-Type": "application/json" },
-        body: JSON.stringify({
-          model: "deepseek-chat",
-          messages: [
-            ...(systemInstruction ? [{ role: "system", content: systemInstruction }] : []),
-            { role: "user", content: prompt }
-          ],
-          temperature: 0.7
-        })
-      });
-      const data = await response.json();
-      return res.json({ text: data.choices[0].message.content });
-    } else if (openRouterKeys.length > 0) {
-      const apiKey = getOpenRouterKey();
-      const model = openRouterModels[Math.floor(Math.random() * openRouterModels.length)];
-      const response = await fetch("https://openrouter.ai/api/v1/chat/completions", {
-        method: "POST",
-        headers: { "Authorization": `Bearer ${apiKey}`, "Content-Type": "application/json" },
-        body: JSON.stringify({
-          model,
-          messages: [
-            ...(systemInstruction ? [{ role: "system", content: systemInstruction }] : []),
-            { role: "user", content: prompt }
-          ]
-        })
-      });
-      const data = await response.json();
-      return res.json({ text: data.choices[0].message.content });
-    }
-    throw new Error("No available provider for text generation");
+      return response.text || "";
+    });
+    return res.json({ text: result });
   } catch (error: any) {
+    console.error(`[Backend] Generate Text Error:`, error.message);
     res.status(500).json({ error: error.message });
   }
 });
@@ -240,12 +235,14 @@ app.post("/api/generate-text", async (req, res) => {
 app.post("/api/embed", async (req, res) => {
   const { text } = req.body;
   try {
-    const ai = getGeminiAI();
-    const result = await ai.models.embedContent({
-      model: 'gemini-embedding-2-preview',
-      contents: [text],
+    const result = await withRetry(async (ai) => {
+      const response = await ai.models.embedContent({
+        model: 'gemini-embedding-2-preview',
+        contents: [text],
+      });
+      return response.embeddings[0].values;
     });
-    res.json({ embedding: result.embeddings[0].values });
+    res.json({ embedding: result });
   } catch (error: any) {
     res.status(500).json({ error: error.message });
   }
