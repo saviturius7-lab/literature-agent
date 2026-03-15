@@ -14,7 +14,11 @@ async function startServer() {
     const url = `https://export.arxiv.org/api/query?search_query=all:${encodeURIComponent(q as string)}&start=0&max_results=20&sortBy=relevance&sortOrder=descending`;
     
     try {
-      const response = await fetch(url);
+      const response = await fetch(url, {
+        headers: {
+          "User-Agent": "ResearchAgent/1.0 (mailto:saviturius7@gmail.com)"
+        }
+      });
       const data = await response.text();
       res.set("Content-Type", "application/xml");
       res.send(data);

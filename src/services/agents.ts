@@ -42,6 +42,11 @@ export const LiteratureAgent = {
       const xmlData = await response.text();
       const jsonObj = parser.parse(xmlData);
       
+      if (!jsonObj || !jsonObj.feed) {
+        console.warn("ArXiv response structure unexpected or empty. XML:", xmlData.slice(0, 500));
+        return [];
+      }
+      
       const entries = jsonObj.feed.entry;
       if (!entries) return [];
       
@@ -50,23 +55,23 @@ export const LiteratureAgent = {
       const papers = entryList.slice(0, 10).map((entry: any) => {
         const authors = Array.isArray(entry.author) 
           ? entry.author.map((a: any) => a.name) 
-          : [entry.author.name];
-        const year = new Date(entry.published).getFullYear();
+          : (entry.author ? [entry.author.name] : ["Unknown Author"]);
+        const year = entry.published ? new Date(entry.published).getFullYear() : "n.d.";
         
         return {
-          title: entry.title.replace(/\n/g, " ").trim(),
-          summary: entry.summary.replace(/\n/g, " ").trim(),
+          title: (entry.title || "Untitled").replace(/\n/g, " ").trim(),
+          summary: (entry.summary || "No summary available").replace(/\n/g, " ").trim(),
           authors,
-          published: entry.published,
-          link: entry.id,
-          citation: `${authors.join(", ")} (${year}). ${entry.title.trim()}. arXiv:${entry.id.split('/').pop()}`
+          published: entry.published || new Date().toISOString(),
+          link: entry.id || "#",
+          citation: `${authors.join(", ")} (${year}). ${(entry.title || "Untitled").trim()}. arXiv:${(entry.id || "").split('/').pop()}`
         };
       });
 
       return papers;
     } catch (error: any) {
       console.error("LiteratureAgent error:", error);
-      throw new Error("Failed to fetch from arXiv via proxy. Please try again.");
+      throw new Error(`Research workflow error: ${error.message || "Failed to fetch from arXiv via proxy. Please try again."}`);
     }
   }
 };
