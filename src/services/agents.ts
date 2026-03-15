@@ -90,7 +90,8 @@ export const SelectionAgent = {
     }`;
     
     const result = await generateJSON<{ selectedIndices: number[] }>(prompt, "You are an expert bibliometrician and research librarian.");
-    const uniqueIndices = Array.from(new Set(result.selectedIndices));
+    const selectedIndices = result.selectedIndices || [];
+    const uniqueIndices = Array.from(new Set(selectedIndices));
     return uniqueIndices.map(idx => papers[idx]).filter(p => !!p);
   }
 };
@@ -157,10 +158,11 @@ export const ContributionAgent = {
     }`;
     
     const result = await generateJSON<{ contributions: Contribution[] }>(prompt, "You are a senior research lead at a top AI lab.");
-    if (result.contributions.length < 2) {
+    const contributions = result.contributions || [];
+    if (contributions.length < 2) {
       throw new Error("Failed to generate at least 2 concrete contributions.");
     }
-    return result.contributions;
+    return contributions;
   }
 };
 
@@ -182,7 +184,12 @@ export const MathFormalizerAgent = {
       "algorithmSteps": ["Step 1: ...", "Step 2: ..."]
     }`;
     
-    return generateJSON<MathFormalization>(prompt, "You are a world-class theoretical computer scientist and mathematician.");
+    const result = await generateJSON<MathFormalization>(prompt, "You are a world-class theoretical computer scientist and mathematician.");
+    return {
+      ...result,
+      notation: result.notation || [],
+      algorithmSteps: result.algorithmSteps || []
+    };
   }
 };
 
@@ -207,7 +214,13 @@ export const ExperimentDesignAgent = {
       "metrics": ["Metric 1", "Metric 2"]
     }`;
     
-    return generateJSON<ExperimentPlan>(prompt, "You are an expert in experimental design and ML evaluation.");
+    const result = await generateJSON<ExperimentPlan>(prompt, "You are an expert in experimental design and ML evaluation.");
+    return {
+      ...result,
+      datasets: result.datasets || [],
+      baselines: result.baselines || [],
+      metrics: result.metrics || []
+    };
   }
 };
 
@@ -225,7 +238,11 @@ export const DatasetGeneratorAgent = {
       "source": "Synthetic/Public Repository"
     }`;
     
-    return generateJSON<DatasetCard>(prompt, "You are a data engineer specializing in high-quality ML datasets.");
+    const result = await generateJSON<DatasetCard>(prompt, "You are a data engineer specializing in high-quality ML datasets.");
+    return {
+      ...result,
+      features: result.features || []
+    };
   }
 };
 
@@ -261,7 +278,14 @@ export const ExperimentRunner = {
       "logs": ["...", "..."]
     }`;
     
-    return generateJSON<ExperimentResult>(prompt, "You are a high-performance compute cluster simulating ML experiments.");
+    const result = await generateJSON<ExperimentResult>(prompt, "You are a high-performance compute cluster simulating ML experiments.");
+    return {
+      ...result,
+      baselines: result.baselines || [],
+      ablationStudies: result.ablationStudies || [],
+      failureCases: result.failureCases || [],
+      logs: result.logs || []
+    };
   }
 };
 
@@ -291,7 +315,11 @@ export const ReviewerSimulatorAgent = {
     }`;
     
     const resultJson = await generateJSON<{ critiques: ReviewerCritique[] }>(prompt, "You are a panel of elite peer reviewers for ICML/NeurIPS.");
-    return resultJson.critiques;
+    const critiques = resultJson.critiques || [];
+    return critiques.map(c => ({
+      ...c,
+      weaknesses: c.weaknesses || []
+    }));
   }
 };
 
@@ -369,6 +397,10 @@ export const ReportAgent = {
     ${papers.map((p, i) => `[${i+1}] ${p.citation}`).join("\n")}
     `;
     
-    return generateJSON<ResearchReport>(prompt, "You are a world-class scientific researcher and lead author of high-impact arXiv preprints.");
+    const reportResult = await generateJSON<ResearchReport>(prompt, "You are a world-class scientific researcher and lead author of high-impact arXiv preprints.");
+    return {
+      ...reportResult,
+      references: reportResult.references || []
+    };
   }
 };

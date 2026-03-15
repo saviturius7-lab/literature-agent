@@ -254,7 +254,7 @@ ${state.report.conclusion}
 
 ---
 ## References
-${state.report.references.map(ref => `- ${ref}`).join('\n')}
+${(state.report.references || []).map(ref => `- ${ref}`).join('\n')}
     `.trim();
 
     const blob = new Blob([content], { type: 'text/markdown' });
@@ -346,7 +346,7 @@ ${state.report.references.map(ref => `- ${ref}`).join('\n')}
         <div className="mb-16">
           <div className="flex items-center justify-between relative">
             <div className="absolute top-1/2 left-0 right-0 h-[1px] bg-pink-pale/10 -translate-y-1/2 z-0" />
-            {steps.map((step, idx) => {
+            {(steps || []).map((step, idx) => {
               const Icon = step.icon;
               const isActive = state.status === step.id;
               const isPast = currentStepIndex > idx || isCompleted;
@@ -426,7 +426,7 @@ ${state.report.references.map(ref => `- ${ref}`).join('\n')}
                   <div className="mb-8 p-4 bg-dark-bg rounded-xl border border-pink-pale/5">
                     <h3 className="text-[9px] uppercase tracking-widest font-bold text-pink-deep mb-3">Baseline Comparison</h3>
                     <div className="space-y-2">
-                      {state.experiment.baselines.map((b, i) => (
+                      {(state.experiment.baselines || []).map((b, i) => (
                         <div key={`baseline-${i}`} className="flex justify-between items-center text-[10px]">
                           <span className="text-pink-pale/60">{b.name}</span>
                           <span className="font-mono text-pink-deep">{(b.accuracy * 100).toFixed(1)}%</span>
@@ -440,7 +440,7 @@ ${state.report.references.map(ref => `- ${ref}`).join('\n')}
                   <div className="mb-8">
                     <h3 className="text-[9px] uppercase tracking-widest font-bold text-pink-pale/40 mb-3">Ablation Studies</h3>
                     <div className="space-y-3">
-                      {state.experiment.ablationStudies.map((a, i) => (
+                      {(state.experiment.ablationStudies || []).map((a, i) => (
                         <div key={`ablation-${i}`} className="text-[10px]">
                           <div className="flex justify-between mb-1">
                             <span className="text-pink-pale/60 italic">{a.componentRemoved} removed</span>
@@ -461,7 +461,7 @@ ${state.report.references.map(ref => `- ${ref}`).join('\n')}
                 <div className="pt-6 border-t border-pink-pale/10">
                   <div className="text-[10px] uppercase tracking-widest text-pink-pale/40 mb-3">Execution Logs</div>
                   <div className="space-y-2 font-mono text-[10px] text-pink-pale/60">
-                    {state.experiment.logs.map((log, i) => (
+                    {(state.experiment.logs || []).map((log, i) => (
                       <div key={`log-${i}`} className="flex gap-2">
                         <span className="text-pink-deep/40">[{i+1}]</span>
                         <span>{log}</span>
@@ -489,7 +489,7 @@ ${state.report.references.map(ref => `- ${ref}`).join('\n')}
                     <span className="text-[10px] font-bold uppercase tracking-widest text-pink-pale/40">LiteratureAgent</span>
                   </div>
                   <div className="space-y-4">
-                    {state.papers.map((paper, i) => (
+                    {(state.papers || []).map((paper, i) => (
                       <div key={`${paper.link}-${i}`} className="group p-6 bg-dark-surface border border-pink-pale/10 rounded-2xl hover:border-pink-deep/30 transition-all">
                         <div className="flex justify-between items-start gap-4 mb-3">
                           <h3 className="font-semibold text-lg leading-tight group-hover:text-pink-deep transition-colors">
@@ -516,12 +516,12 @@ ${state.report.references.map(ref => `- ${ref}`).join('\n')}
                         </div>
 
                         <div className="flex flex-wrap gap-2">
-                          {paper.authors.slice(0, 3).map((author, j) => (
+                          {(paper.authors || []).slice(0, 3).map((author, j) => (
                             <span key={`${paper.link}-auth-${i}-${j}`} className="text-[10px] px-2 py-1 bg-dark-bg rounded-md text-pink-pale/40 font-medium uppercase tracking-wider">
                               {author}
                             </span>
                           ))}
-                          {paper.authors.length > 3 && (
+                          {(paper.authors || []).length > 3 && (
                             <span className="text-[10px] px-2 py-1 text-pink-pale/20 font-medium italic">
                               + {paper.authors.length - 3} more
                             </span>
@@ -564,7 +564,7 @@ ${state.report.references.map(ref => `- ${ref}`).join('\n')}
                       <div className="mt-8 pt-8 border-t border-pink-pale/10">
                         <h4 className="text-[10px] uppercase tracking-widest text-pink-pale/40 mb-4">Key Contributions</h4>
                         <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                          {state.contributions.map((c, i) => (
+                          {(state.contributions || []).map((c, i) => (
                             <div key={`contribution-${i}`} className="p-4 bg-dark-bg rounded-xl border border-pink-pale/5">
                               <div className="text-xs font-bold text-pink-deep mb-1">{c.type}</div>
                               <p className="text-xs text-pink-pale/60">{c.description}</p>
@@ -600,7 +600,7 @@ ${state.report.references.map(ref => `- ${ref}`).join('\n')}
                         <div>
                           <h4 className="text-[10px] uppercase tracking-widest text-pink-pale/40 mb-3">Notation</h4>
                           <div className="space-y-2">
-                            {state.mathFormalization.notation.map((n, i) => (
+                            {(state.mathFormalization.notation || []).map((n, i) => (
                               <div key={`notation-${i}`} className="flex gap-3 text-xs">
                                 <code className="text-pink-deep font-mono bg-dark-bg px-1.5 rounded">{n.symbol}</code>
                                 <span className="text-pink-pale/60">{n.definition}</span>
@@ -619,7 +619,7 @@ ${state.report.references.map(ref => `- ${ref}`).join('\n')}
                       <div>
                         <h4 className="text-[10px] uppercase tracking-widest text-pink-pale/40 mb-3">Algorithm Steps</h4>
                         <div className="space-y-3">
-                          {state.mathFormalization.algorithmSteps.map((step, i) => (
+                          {(state.mathFormalization.algorithmSteps || []).map((step, i) => (
                             <div key={`algo-${i}`} className="flex gap-4 items-start">
                               <span className="text-pink-deep font-mono text-xs mt-0.5">{i+1}.</span>
                               <p className="text-sm text-pink-pale/70">{step}</p>
@@ -654,7 +654,7 @@ ${state.report.references.map(ref => `- ${ref}`).join('\n')}
                           <p className="text-xs text-pink-pale/70">{state.experimentPlan.protocol}</p>
                         </div>
                         <div className="flex flex-wrap gap-2">
-                          {state.experimentPlan.metrics.map((m, i) => (
+                          {(state.experimentPlan.metrics || []).map((m, i) => (
                             <span key={`metric-${i}`} className="px-2 py-1 bg-dark-bg rounded text-[10px] text-pink-pale/60 border border-pink-pale/5">
                               {m}
                             </span>
@@ -673,7 +673,7 @@ ${state.report.references.map(ref => `- ${ref}`).join('\n')}
                           </div>
                           <p className="text-[11px] text-pink-pale/60 leading-relaxed">{state.datasetCard.description}</p>
                           <div className="flex flex-wrap gap-1.5">
-                            {state.datasetCard.features.map((f, i) => (
+                            {(state.datasetCard.features || []).map((f, i) => (
                               <span key={`feature-${i}`} className="text-[9px] text-pink-pale/40 font-mono">#{f}</span>
                             ))}
                           </div>
@@ -701,7 +701,7 @@ ${state.report.references.map(ref => `- ${ref}`).join('\n')}
                   </div>
                   
                   <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-                    {state.reviewerCritiques.map((critique, i) => (
+                    {(state.reviewerCritiques || []).map((critique, i) => (
                       <div key={`reviewer-${i}`} className="p-6 bg-dark-surface border border-pink-pale/10 rounded-2xl flex flex-col">
                         <div className="flex justify-between items-center mb-4">
                           <span className="text-[10px] font-bold uppercase tracking-widest text-pink-pale/40">Reviewer #{i+1}</span>
@@ -719,7 +719,7 @@ ${state.report.references.map(ref => `- ${ref}`).join('\n')}
                           <div>
                             <div className="text-[9px] uppercase tracking-widest font-bold text-pink-deep mb-1">Weaknesses</div>
                             <ul className="space-y-1">
-                              {critique.weaknesses.map((w, j) => (
+                              {(critique.weaknesses || []).map((w, j) => (
                                 <li key={`w-${i}-${j}`} className="text-[11px] text-pink-pale/60 flex gap-1.5">
                                   <span className="text-pink-deep opacity-50">•</span> {w}
                                 </li>
@@ -791,7 +791,7 @@ ${state.report.references.map(ref => `- ${ref}`).join('\n')}
                     <section className="pt-8 border-t border-pink-pale/10">
                       <h3 className="text-xs uppercase tracking-widest font-bold mb-4 text-pink-deep">References</h3>
                       <ul className="space-y-2">
-                        {state.report.references.map((ref, i) => (
+                        {(state.report.references || []).map((ref, i) => (
                           <li key={`ref-${i}`} className="text-[11px] text-pink-pale/40 font-mono leading-relaxed">
                             <span className="text-pink-deep">[{i+1}]</span> {ref}
                           </li>
