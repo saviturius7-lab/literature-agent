@@ -89,6 +89,7 @@ export interface ResearchReport {
 export type AgentStatus = 
   | 'idle' 
   | 'searching' 
+  | 'filtering_relevance'
   | 'hypothesizing' 
   | 'checking_novelty'
   | 'extracting_contributions'
@@ -99,6 +100,7 @@ export type AgentStatus =
   | 'reviewing'
   | 'revising'
   | 'reporting' 
+  | 'verifying_report'
   | 'completed' 
   | 'error';
 

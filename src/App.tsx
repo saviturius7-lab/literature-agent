@@ -49,7 +49,9 @@ import {
   ExperimentRunner, 
   ReviewerSimulatorAgent,
   RevisionAgent,
-  ReportAgent 
+  ReportAgent,
+  TopicRelevanceAgent,
+  VerificationAgent
 } from './services/agents';
 
 function cn(...inputs: ClassValue[]) {
@@ -110,9 +112,16 @@ export default function App() {
         if (rawPapers.length === 0) {
           throw new Error("No papers found for this topic on arXiv.");
         }
+
+        // 1a. Topic Relevance Agent
+        setState(prev => ({ ...prev, status: 'filtering_relevance' }));
+        const relevantPapers = await TopicRelevanceAgent.filterRelevantPapers(inputTopic, rawPapers);
+        if (relevantPapers.length === 0) {
+          throw new Error("No directly relevant papers found for this topic. Please try a more specific or common research topic.");
+        }
         
         // 1b. Selection Agent
-        const papers = await SelectionAgent.selectPapers(inputTopic, rawPapers);
+        const papers = await SelectionAgent.selectPapers(inputTopic, relevantPapers);
         setState(prev => ({ ...prev, status: 'hypothesizing', papers }));
 
         // 2. Hypothesis Agent
@@ -207,6 +216,22 @@ export default function App() {
           experiment, 
           reviewerCritiques
         );
+
+        // 6. Verification Agent
+        setState(prev => ({ ...prev, status: 'verifying_report', report }));
+        const verification = await VerificationAgent.verifyReport(report, papers);
+        
+        if (!verification.isValid) {
+          console.warn("Report verification failed:", verification.issues);
+          // If it's the first or second iteration, we might want to retry reporting with a stronger prompt
+          // but for now we'll just log it and proceed, or we could throw an error to force a full iteration retry
+          if (currentIteration < MAX_ITERATIONS) {
+             console.log("Retrying iteration due to verification failure...");
+             currentIteration++;
+             continue;
+          }
+        }
+
         setState(prev => ({ ...prev, status: 'completed', report }));
         break;
       }
@@ -293,9 +318,11 @@ ${(state.report.references || []).map(ref => `- ${ref}`).join('\n')}
   ];
 
   const currentStepIndex = steps.findIndex(s => {
+    if (state.status === 'filtering_relevance') return s.id === 'searching';
     if (state.status === 'checking_novelty' || state.status === 'extracting_contributions') return s.id === 'hypothesizing';
     if (state.status === 'designing_experiment' || state.status === 'generating_dataset') return s.id === 'formalizing_math';
     if (state.status === 'revising') return s.id === 'reviewing';
+    if (state.status === 'verifying_report') return s.id === 'reporting';
     return s.id === state.status;
   });
   const isCompleted = state.status === 'completed';

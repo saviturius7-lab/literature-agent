@@ -52,7 +52,7 @@ export const LiteratureAgent = {
       
       const entryList = Array.isArray(entries) ? entries : [entries];
       
-      const papers = entryList.slice(0, 10).map((entry: any) => {
+      const papers = entryList.slice(0, 15).map((entry: any) => {
         const authors = Array.isArray(entry.author) 
           ? entry.author.map((a: any) => a.name) 
           : (entry.author ? [entry.author.name] : ["Unknown Author"]);
@@ -76,20 +76,42 @@ export const LiteratureAgent = {
   }
 };
 
-export const SelectionAgent = {
-  async selectPapers(topic: string, papers: Paper[]): Promise<Paper[]> {
-    const prompt = `From the following list of research papers about "${topic}", select the 8 most influential, highly-cited, or foundational papers. 
-    Prioritize well-known authors and papers that appear to be seminal works in the field.
+export const TopicRelevanceAgent = {
+  async filterRelevantPapers(topic: string, papers: Paper[]): Promise<Paper[]> {
+    if (papers.length === 0) return [];
+
+    const prompt = `Evaluate the relevance of the following research papers to the topic: "${topic}".
+    For each paper, determine if it is directly relevant or highly related.
     
     Papers:
-    ${papers.map((p, i) => `ID: ${i} | Title: ${p.title} | Authors: ${p.authors.join(", ")} | Summary: ${p.summary.slice(0, 200)}...`).join("\n\n")}
+    ${papers.map((p, i) => `ID: ${i} | Title: ${p.title} | Summary: ${p.summary.slice(0, 300)}...`).join("\n\n")}
+    
+    Return a JSON object with the indices of papers that are TRULY relevant to "${topic}":
+    {
+      "relevantIndices": [number, number, ...]
+    }`;
+
+    const result = await generateJSON<{ relevantIndices: number[] }>(prompt, "You are a strict academic reviewer who filters out irrelevant search results.");
+    const relevantIndices = result.relevantIndices || [];
+    return relevantIndices.map(idx => papers[idx]).filter(p => !!p);
+  }
+};
+
+export const SelectionAgent = {
+  async selectPapers(topic: string, papers: Paper[]): Promise<Paper[]> {
+    const prompt = `From the following list of research papers about "${topic}", select the 8 most foundational, seminal, or high-impact papers. 
+    Prioritize papers that provide a strong theoretical or empirical basis for further research on "${topic}".
+    Avoid papers that are only tangentially related.
+    
+    Papers:
+    ${papers.map((p, i) => `ID: ${i} | Title: ${p.title} | Authors: ${p.authors.join(", ")} | Summary: ${p.summary.slice(0, 300)}...`).join("\n\n")}
     
     Return a JSON object with the indices of the selected papers:
     {
       "selectedIndices": [number, number, ...]
     }`;
     
-    const result = await generateJSON<{ selectedIndices: number[] }>(prompt, "You are an expert bibliometrician and research librarian.");
+    const result = await generateJSON<{ selectedIndices: number[] }>(prompt, "You are an expert research strategist and bibliometrician.");
     const selectedIndices = result.selectedIndices || [];
     const uniqueIndices = Array.from(new Set(selectedIndices));
     return uniqueIndices.map(idx => papers[idx]).filter(p => !!p);
@@ -98,8 +120,9 @@ export const SelectionAgent = {
 
 export const HypothesisAgent = {
   async generateHypothesis(topic: string, papers: Paper[]): Promise<Hypothesis> {
-    const papersContext = papers.map(p => `Title: ${p.title}\nSummary: ${p.summary}`).join("\n\n");
-    const prompt = `Based on the following research papers about "${topic}", propose a novel research hypothesis.
+    const papersContext = papers.map((p, i) => `Paper [${i+1}]: ${p.title}\nSummary: ${p.summary}`).join("\n\n");
+    const prompt = `Based STRICTLY on the following research papers about "${topic}", propose a novel research hypothesis.
+    Do NOT invent information that is not supported by or extrapolated from these specific papers.
     
     Papers:
     ${papersContext}
@@ -108,11 +131,11 @@ export const HypothesisAgent = {
     {
       "title": "Hypothesis Title",
       "description": "Clear statement of the hypothesis",
-      "rationale": "Why this hypothesis makes sense given the literature",
+      "rationale": "Why this hypothesis makes sense given the provided literature. Refer to specific papers by their index [1], [2], etc.",
       "expectedOutcome": "What we expect to see if the hypothesis is true"
     }`;
     
-    return generateJSON<Hypothesis>(prompt, "You are a brilliant research scientist specializing in machine learning and data science.");
+    return generateJSON<Hypothesis>(prompt, "You are a brilliant research scientist who values empirical grounding and avoids speculation.");
   }
 };
 
@@ -355,6 +378,12 @@ export const ReportAgent = {
   ): Promise<ResearchReport> {
     const prompt = `Write an extensive, professional research report in the style of an arXiv preprint.
     
+    CRITICAL INSTRUCTIONS:
+    1. ONLY use the provided papers for citations. Do NOT invent any papers or citations.
+    2. Every in-text citation like [1], [2] MUST correspond to the paper list provided below.
+    3. Ensure the methodology and discussion are grounded in the provided literature.
+    4. If a claim is made, it should ideally be supported by one of the provided papers.
+    
     Topic: ${topic}
     Hypothesis: ${hypothesis.title}
     Contributions: ${contributions.map(c => c.description).join(", ")}
@@ -393,14 +422,39 @@ export const ReportAgent = {
       "references": ["Full list in APA style"]
     }
     
-    Citations:
+    Allowed Citations (ONLY USE THESE):
     ${papers.map((p, i) => `[${i+1}] ${p.citation}`).join("\n")}
     `;
     
-    const reportResult = await generateJSON<ResearchReport>(prompt, "You are a world-class scientific researcher and lead author of high-impact arXiv preprints.");
+    const reportResult = await generateJSON<ResearchReport>(prompt, "You are a world-class scientific researcher who adheres to the highest standards of academic integrity and grounding.");
     return {
       ...reportResult,
       references: reportResult.references || []
     };
+  }
+};
+
+export const VerificationAgent = {
+  async verifyReport(report: ResearchReport, papers: Paper[]): Promise<{ isValid: boolean; issues: string[] }> {
+    const prompt = `Verify the following research report for hallucinations and citation accuracy.
+    
+    Report Abstract: ${report.abstract.slice(0, 500)}...
+    Report References: ${report.references.join("\n")}
+    
+    Allowed Papers:
+    ${papers.map((p, i) => `[${i+1}] ${p.title} by ${p.authors.join(", ")}`).join("\n")}
+    
+    Check for:
+    1. Citations in the text that are NOT in the allowed list.
+    2. References listed that are NOT in the allowed list.
+    3. Claims that seem completely disconnected from the provided papers.
+    
+    Return a JSON object:
+    {
+      "isValid": boolean,
+      "issues": ["Issue 1", "Issue 2", ...]
+    }`;
+
+    return generateJSON<{ isValid: boolean; issues: string[] }>(prompt, "You are a rigorous fact-checker and academic auditor.");
   }
 };

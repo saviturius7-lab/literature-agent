@@ -1,5 +1,4 @@
 import express from "express";
-import { createServer as createViteServer } from "vite";
 import path from "path";
 
 const app = express();
@@ -20,8 +19,12 @@ app.get("/api/arxiv", async (req, res) => {
     });
     
     if (!response.ok) {
-      console.error(`ArXiv API responded with status: ${response.status}`);
-      return res.status(response.status).json({ error: `ArXiv API error: ${response.status}` });
+      const errorText = await response.text().catch(() => "No error body");
+      console.error(`ArXiv API responded with status: ${response.status}. Body: ${errorText}`);
+      return res.status(response.status).json({ 
+        error: `ArXiv API error: ${response.status}`,
+        details: errorText.slice(0, 200)
+      });
     }
 
     const data = await response.text();
@@ -30,7 +33,10 @@ app.get("/api/arxiv", async (req, res) => {
     res.send(data);
   } catch (error) {
     console.error("ArXiv Proxy Error:", error);
-    res.status(500).json({ error: "Failed to fetch from arXiv" });
+    res.status(500).json({ 
+      error: "Failed to fetch from arXiv",
+      message: error instanceof Error ? error.message : "Unknown error"
+    });
   }
 });
 
@@ -38,15 +44,22 @@ async function setupServer() {
   // Vite middleware for development ONLY
   // On Vercel, static files are served by the CDN, not this Express app.
   if (process.env.NODE_ENV !== "production") {
-    const vite = await createViteServer({
-      server: { middlewareMode: true },
-      appType: "spa",
-    });
-    app.use(vite.middlewares);
-    
-    app.listen(PORT, "0.0.0.0", () => {
-      console.log(`Development server running on http://localhost:${PORT}`);
-    });
+    try {
+      // Dynamic import to avoid loading 'vite' in production
+      const { createServer: createViteServer } = await import("vite");
+      
+      const vite = await createViteServer({
+        server: { middlewareMode: true },
+        appType: "spa",
+      });
+      app.use(vite.middlewares);
+      
+      app.listen(PORT, "0.0.0.0", () => {
+        console.log(`Development server running on http://localhost:${PORT}`);
+      });
+    } catch (e) {
+      console.error("Failed to start Vite dev server:", e);
+    }
   }
 }
 
