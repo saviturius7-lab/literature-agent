@@ -182,12 +182,50 @@ function cleanJSON(text: string): string {
   // Remove markdown code blocks
   let cleaned = text.replace(/```json\n?|```/g, "").trim();
   
-  // Fix common unescaped backslash issues in strings
-  // This regex looks for backslashes that are NOT followed by a valid escape character (", \, /, b, f, n, r, t, uXXXX)
-  // and escapes them.
-  cleaned = cleaned.replace(/\\(?![\\\/bfnrtu"'])/g, "\\\\");
+  // We want to escape backslashes that are NOT part of a valid JSON escape sequence.
+  // Valid JSON escape sequences are: \ followed by one of: " \ / b f n r t u
   
-  return cleaned;
+  let result = "";
+  for (let i = 0; i < cleaned.length; i++) {
+    if (cleaned[i] === "\\") {
+      const next = cleaned[i + 1];
+      // Check for standard escapes
+      if (["\"", "\\", "/", "b", "f", "n", "r", "t"].includes(next)) {
+        result += "\\";
+        result += next;
+        i++; // skip next
+      } else if (next === "u") {
+        // check for 4 hex digits
+        const hexPart = cleaned.slice(i + 2, i + 6);
+        if (/[0-9a-fA-F]{4}/.test(hexPart)) {
+          result += "\\u";
+          result += hexPart;
+          i += 5; // skip u + 4 digits
+        } else {
+          // It's a "bad" \u, escape the backslash
+          result += "\\\\";
+        }
+      } else {
+        // It's a "bad" backslash (like in LaTeX \mathcal), escape it for JSON
+        result += "\\\\";
+      }
+    } else {
+      result += cleaned[i];
+    }
+  }
+  
+  return result;
+}
+
+export async function embedText(text: string): Promise<number[]> {
+  return withRetry(async () => {
+    const ai = getGeminiAI();
+    const result = await ai.models.embedContent({
+      model: 'gemini-embedding-2-preview',
+      contents: [text],
+    });
+    return result.embeddings[0].values;
+  });
 }
 
 export async function generateJSON<T>(prompt: string, systemInstruction?: string): Promise<T> {

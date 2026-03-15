@@ -14,12 +14,57 @@ export interface Hypothesis {
   expectedOutcome: string;
 }
 
+export interface Contribution {
+  type: string;
+  description: string;
+}
+
+export interface ExperimentPlan {
+  protocol: string;
+  datasets: string[];
+  baselines: string[];
+  metrics: string[];
+}
+
+export interface DatasetCard {
+  name: string;
+  description: string;
+  features: string[];
+  size: string;
+  source: string;
+}
+
+export interface MathFormalization {
+  problemFormulation: string;
+  notation: { symbol: string; definition: string; }[];
+  objectiveFunction: string;
+  algorithmSteps: string[];
+}
+
+export interface ReviewerCritique {
+  reviewerId: number;
+  weaknesses: string[];
+  noveltyCritique: string;
+  rating: number;
+}
+
+export interface AblationStudy {
+  componentRemoved: string;
+  impactOnMetric: number;
+}
+
+export interface FailureCase {
+  example: string;
+  explanation: string;
+}
+
 export interface ExperimentResult {
   accuracy: number;
-  precision: number;
-  recall: number;
   f1Score: number;
-  details: string;
+  baselines: { name: string; accuracy: number }[];
+  ablationStudies: AblationStudy[];
+  failureCases: FailureCase[];
+  implementationDetails: string;
   logs: string[];
 }
 
@@ -41,15 +86,33 @@ export interface ResearchReport {
   references: string[];
 }
 
-export type AgentStatus = 'idle' | 'searching' | 'hypothesizing' | 'experimenting' | 'critiquing' | 'reporting' | 'completed' | 'error';
+export type AgentStatus = 
+  | 'idle' 
+  | 'searching' 
+  | 'hypothesizing' 
+  | 'checking_novelty'
+  | 'extracting_contributions'
+  | 'formalizing_math'
+  | 'designing_experiment'
+  | 'generating_dataset'
+  | 'experimenting' 
+  | 'reviewing'
+  | 'revising'
+  | 'reporting' 
+  | 'completed' 
+  | 'error';
 
 export interface AppState {
   status: AgentStatus;
   topic: string;
   papers: Paper[];
   hypothesis: Hypothesis | null;
+  contributions: Contribution[];
+  mathFormalization: MathFormalization | null;
+  experimentPlan: ExperimentPlan | null;
+  datasetCard: DatasetCard | null;
   experiment: ExperimentResult | null;
-  critique: Critique | null;
+  reviewerCritiques: ReviewerCritique[];
   report: ResearchReport | null;
   error: string | null;
   iteration: number;

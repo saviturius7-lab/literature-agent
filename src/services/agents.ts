@@ -1,8 +1,34 @@
 import { XMLParser } from "fast-xml-parser";
-import { Paper, Hypothesis, ExperimentResult, Critique, ResearchReport } from "../types";
-import { generateJSON, generateText } from "./gemini";
+import { 
+  Paper, 
+  Hypothesis, 
+  ExperimentResult, 
+  ResearchReport, 
+  Contribution, 
+  MathFormalization, 
+  ExperimentPlan, 
+  DatasetCard, 
+  ReviewerCritique,
+  AblationStudy,
+  FailureCase
+} from "../types";
+import { generateJSON, embedText } from "./gemini";
 
 const parser = new XMLParser();
+
+function cosineSimilarity(a: number[], b: number[]): number {
+  let dotProduct = 0;
+  let mA = 0;
+  let mB = 0;
+  for (let i = 0; i < a.length; i++) {
+    dotProduct += (a[i] * b[i]);
+    mA += (a[i] * a[i]);
+    mB += (b[i] * b[i]);
+  }
+  mA = Math.sqrt(mA);
+  mB = Math.sqrt(mB);
+  return dotProduct / (mA * mB);
+}
 
 export const LiteratureAgent = {
   async fetchPapers(topic: string): Promise<Paper[]> {
@@ -21,9 +47,7 @@ export const LiteratureAgent = {
       
       const entryList = Array.isArray(entries) ? entries : [entries];
       
-      // Map and sort by a heuristic (e.g., length of summary or presence of certain keywords)
-      // Since we can't get real citation counts, we'll take the top 8 most relevant ones
-      const papers = entryList.slice(0, 8).map((entry: any) => {
+      const papers = entryList.slice(0, 10).map((entry: any) => {
         const authors = Array.isArray(entry.author) 
           ? entry.author.map((a: any) => a.name) 
           : [entry.author.name];
@@ -86,98 +110,257 @@ export const HypothesisAgent = {
   }
 };
 
-export const ExperimentRunner = {
-  async runExperiment(hypothesis: Hypothesis): Promise<ExperimentResult> {
-    // Simulating an ML experiment (RandomForest as requested)
-    // We'll generate some deterministic-looking logs and scores based on the hypothesis content
-    
-    const seed = hypothesis.title.length + hypothesis.description.length;
-    const random = (s: number) => {
-      const x = Math.sin(s) * 10000;
-      return x - Math.floor(x);
+export const NoveltyCheckerAgent = {
+  async checkNovelty(hypothesis: Hypothesis, papers: Paper[]): Promise<{ isNovel: boolean; similarity: number; mostSimilarPaper?: string }> {
+    const hypothesisEmbedding = await embedText(`${hypothesis.title} ${hypothesis.description}`);
+    let maxSimilarity = -1;
+    let mostSimilarPaper = "";
+
+    for (const paper of papers) {
+      const paperEmbedding = await embedText(`${paper.title} ${paper.summary}`);
+      const similarity = cosineSimilarity(hypothesisEmbedding, paperEmbedding);
+      if (similarity > maxSimilarity) {
+        maxSimilarity = similarity;
+        mostSimilarPaper = paper.title;
+      }
+    }
+
+    const threshold = 0.85;
+    return {
+      isNovel: maxSimilarity < threshold,
+      similarity: maxSimilarity,
+      mostSimilarPaper
     };
-
-    const logs = [
-      "Initializing dataset...",
-      "Preprocessing features: normalization and encoding...",
-      "Splitting data into training (80%) and testing (20%) sets...",
-      "Training RandomForestClassifier with 100 estimators...",
-      "Evaluating model performance on test set...",
-      "Calculating metrics..."
-    ];
-
-    // Simulate some variation based on the hypothesis
-    const baseAcc = 0.75 + (random(seed) * 0.2);
-    
-    return new Promise((resolve) => {
-      setTimeout(() => {
-        resolve({
-          accuracy: baseAcc,
-          precision: baseAcc - 0.05 + (random(seed + 1) * 0.1),
-          recall: baseAcc - 0.02 + (random(seed + 2) * 0.04),
-          f1Score: baseAcc - 0.01 + (random(seed + 3) * 0.02),
-          details: `The experiment tested the hypothesis: "${hypothesis.title}". 
-          We utilized a multi-layered transformer architecture with ${Math.floor(random(seed)*12 + 6)} attention heads. 
-          The dataset consisted of ${Math.floor(random(seed+4)*50000 + 10000)} samples. 
-          Training was conducted over ${Math.floor(random(seed+5)*50 + 10)} epochs with a learning rate of ${ (random(seed+6)*0.001).toFixed(5) }.
-          The model showed significant predictive power in the simulated environment, particularly in handling long-range dependencies.`,
-          logs
-        });
-      }, 3000); // Simulate processing time
-    });
   }
 };
 
-export const CriticAgent = {
-  async critiqueResults(hypothesis: Hypothesis, result: ExperimentResult): Promise<Critique> {
-    const prompt = `Critique the following research experiment results.
+export const ContributionAgent = {
+  async extractContributions(hypothesis: Hypothesis): Promise<Contribution[]> {
+    const prompt = `Given the hypothesis: "${hypothesis.title}" and the existing literature, identify the specific research contributions this work would make.
     
-    Hypothesis: ${JSON.stringify(hypothesis)}
-    Results: ${JSON.stringify(result)}
+    Hypothesis: ${hypothesis.description}
+    
+    You MUST generate at least 2 concrete contributions.
+    Examples: New architecture, New dataset, New evaluation metric, Empirical findings.
+    
+    Return a JSON object:
+    {
+      "contributions": [
+        { "type": "Architecture", "description": "..." },
+        { "type": "Dataset", "description": "..." }
+      ]
+    }`;
+    
+    const result = await generateJSON<{ contributions: Contribution[] }>(prompt, "You are a senior research lead at a top AI lab.");
+    if (result.contributions.length < 2) {
+      throw new Error("Failed to generate at least 2 concrete contributions.");
+    }
+    return result.contributions;
+  }
+};
+
+export const MathFormalizerAgent = {
+  async formalize(hypothesis: Hypothesis): Promise<MathFormalization> {
+    const prompt = `Provide a rigorous mathematical formalization for the following research hypothesis:
+    "${hypothesis.title}"
+    
+    Description: ${hypothesis.description}
     
     Return a JSON object with:
     {
-      "strengths": ["list of strengths"],
-      "weaknesses": ["list of weaknesses"],
-      "suggestions": ["future work suggestions"],
-      "overallRating": 0-10,
-      "isReliable": boolean (true if overallRating > 7 and methodology is sound)
+      "problemFormulation": "Formal definition of the problem space",
+      "notation": [
+        { "symbol": "x", "definition": "Input vector" },
+        { "symbol": "y", "definition": "Target label" }
+      ],
+      "objectiveFunction": "L = sum(y - f(x))^2",
+      "algorithmSteps": ["Step 1: ...", "Step 2: ..."]
     }`;
     
-    return generateJSON<Critique>(prompt, "You are a rigorous peer reviewer for a top-tier scientific journal.");
+    return generateJSON<MathFormalization>(prompt, "You are a world-class theoretical computer scientist and mathematician.");
+  }
+};
+
+export const ExperimentDesignAgent = {
+  async design(hypothesis: Hypothesis, contributions: Contribution[]): Promise<ExperimentPlan> {
+    const prompt = `Design a rigorous experiment to test the following hypothesis:
+    "${hypothesis.title}"
+    
+    Contributions: ${contributions.map(c => c.description).join(", ")}
+    
+    You MUST include:
+    1. A specific dataset.
+    2. At least 2 baseline models for comparison.
+    3. Specific evaluation metrics.
+    4. A detailed evaluation protocol.
+    
+    Return a JSON object:
+    {
+      "protocol": "Step-by-step protocol",
+      "datasets": ["Dataset 1", "Dataset 2"],
+      "baselines": ["Baseline 1", "Baseline 2"],
+      "metrics": ["Metric 1", "Metric 2"]
+    }`;
+    
+    return generateJSON<ExperimentPlan>(prompt, "You are an expert in experimental design and ML evaluation.");
+  }
+};
+
+export const DatasetGeneratorAgent = {
+  async generate(plan: ExperimentPlan): Promise<DatasetCard> {
+    const prompt = `Generate a detailed Dataset Card for the primary dataset proposed in the experiment plan:
+    "${plan.datasets[0]}"
+    
+    Return a JSON object:
+    {
+      "name": "Dataset Name",
+      "description": "Detailed description",
+      "features": ["feature1", "feature2"],
+      "size": "100k samples",
+      "source": "Synthetic/Public Repository"
+    }`;
+    
+    return generateJSON<DatasetCard>(prompt, "You are a data engineer specializing in high-quality ML datasets.");
+  }
+};
+
+export const ExperimentRunner = {
+  async runExperiment(hypothesis: Hypothesis, plan: ExperimentPlan): Promise<ExperimentResult> {
+    const prompt = `Simulate the execution of the following experiment:
+    Hypothesis: ${hypothesis.title}
+    Plan: ${plan.protocol}
+    Baselines: ${plan.baselines.join(", ")}
+    
+    Generate realistic experimental results, including:
+    1. Accuracy and F1 Score (Proposed model should generally outperform baselines slightly if the hypothesis is sound).
+    2. Baseline results (Accuracy for each baseline).
+    3. Ablation studies (Impact of removing key components).
+    4. Failure cases (Specific examples where the model fails).
+    5. Implementation details (Frameworks, hardware, hyperparameters).
+    6. A set of 5-10 execution logs.
+    
+    Return a JSON object:
+    {
+      "accuracy": 0.89,
+      "f1Score": 0.87,
+      "baselines": [
+        { "name": "Baseline 1", "accuracy": 0.82 }
+      ],
+      "ablationStudies": [
+        { "componentRemoved": "Attention", "impactOnMetric": 0.05 }
+      ],
+      "failureCases": [
+        { "example": "...", "explanation": "..." }
+      ],
+      "implementationDetails": "...",
+      "logs": ["...", "..."]
+    }`;
+    
+    return generateJSON<ExperimentResult>(prompt, "You are a high-performance compute cluster simulating ML experiments.");
+  }
+};
+
+export const ReviewerSimulatorAgent = {
+  async simulate(hypothesis: Hypothesis, result: ExperimentResult): Promise<ReviewerCritique[]> {
+    const prompt = `Simulate 3 peer reviews for the following research:
+    
+    Hypothesis: ${hypothesis.title}
+    Results: Accuracy ${result.accuracy.toFixed(2)}, F1 ${result.f1Score.toFixed(2)}
+    
+    Each reviewer should provide:
+    1. Weaknesses
+    2. Novelty critique
+    3. A rating (1-10)
+    
+    Return a JSON object:
+    {
+      "critiques": [
+        {
+          "reviewerId": 1,
+          "weaknesses": ["..."],
+          "noveltyCritique": "...",
+          "rating": 7
+        },
+        ...
+      ]
+    }`;
+    
+    const resultJson = await generateJSON<{ critiques: ReviewerCritique[] }>(prompt, "You are a panel of elite peer reviewers for ICML/NeurIPS.");
+    return resultJson.critiques;
+  }
+};
+
+export const RevisionAgent = {
+  async revise(hypothesis: Hypothesis, result: ExperimentResult, critiques: ReviewerCritique[]): Promise<{ revisedHypothesis: Hypothesis; revisedResult: ExperimentResult }> {
+    const prompt = `Revise the research based on the following reviewer critiques:
+    
+    Critiques: ${JSON.stringify(critiques)}
+    
+    Address the weaknesses and clarity issues. 
+    Return a JSON object with the revised hypothesis and refined results (minor adjustments to reflect addressed concerns).
+    
+    {
+      "revisedHypothesis": { ... },
+      "revisedResult": { ... }
+    }`;
+    
+    return generateJSON<{ revisedHypothesis: Hypothesis; revisedResult: ExperimentResult }>(prompt, "You are a meticulous lead researcher refining a paper for final submission.");
   }
 };
 
 export const ReportAgent = {
-  async generateReport(topic: string, papers: Paper[], hypothesis: Hypothesis, result: ExperimentResult, critique: Critique): Promise<ResearchReport> {
-    const prompt = `Write an extensive, professional research report in the style of an arXiv preprint based on the following data.
+  async generateReport(
+    topic: string, 
+    papers: Paper[], 
+    hypothesis: Hypothesis, 
+    contributions: Contribution[],
+    math: MathFormalization,
+    experimentPlan: ExperimentPlan,
+    datasetCard: DatasetCard,
+    result: ExperimentResult,
+    critiques: ReviewerCritique[]
+  ): Promise<ResearchReport> {
+    const prompt = `Write an extensive, professional research report in the style of an arXiv preprint.
     
     Topic: ${topic}
-    Literature: ${papers.length} high-impact papers analyzed.
     Hypothesis: ${hypothesis.title}
+    Contributions: ${contributions.map(c => c.description).join(", ")}
+    Mathematical Formalization: ${math.problemFormulation}
+    Algorithm: ${math.algorithmSteps.join(" -> ")}
+    Experiment Plan: ${experimentPlan.protocol}
+    Dataset: ${datasetCard.name} - ${datasetCard.description}
     Results: Accuracy ${result.accuracy.toFixed(2)}, F1 ${result.f1Score.toFixed(2)}
-    Critique: ${critique.overallRating}/10
+    Baselines: ${result.baselines.map(b => `${b.name} (${b.accuracy.toFixed(2)})`).join(", ")}
+    Ablations: ${result.ablationStudies.map(a => `${a.componentRemoved} (-${a.impactOnMetric.toFixed(2)})`).join(", ")}
+    Failure Cases: ${result.failureCases.map(f => f.example).join("; ")}
+    Reviewer Feedback: ${critiques.map(c => c.weaknesses.join(", ")).join("; ")}
+    
+    You MUST include:
+    1. A clear "Contributions" section in the Introduction.
+    2. A "Mathematical Formalization" section with notation and algorithms.
+    3. A "Dataset Card" section describing the data.
+    4. A "Baseline Comparison" table/section with at least 2 baselines.
+    5. An "Ablation Study" section.
+    6. A "Failure Case Analysis" section with concrete examples.
+    7. An "Implementation Details" section for reproducibility.
     
     Requirements:
-    1. The report must be EXTENSIVE and detailed (aim for 2000+ words).
-    2. Use professional academic language consistent with top-tier arXiv preprints.
-    3. Include heavy in-text citations using the format [1], [2], etc., corresponding to the references provided. Every claim must be cited.
-    4. Each section should be comprehensive, with sub-sections (e.g., 2.1, 2.2) if necessary.
-    5. The methodology should be highly technical, describing algorithms, data structures, and theoretical frameworks.
-    6. Discussion must compare findings with at least 5 of the cited papers.
+    - Professional academic language.
+    - Heavy in-text citations [1], [2], etc.
+    - Comprehensive sections (2000+ words).
     
-    Return a JSON object with:
+    Return a JSON object:
     {
-      "abstract": "A concise summary of the research (250-300 words).",
-      "introduction": "A detailed background, problem statement, and literature review with many citations.",
-      "methodology": "A technical description of the experimental setup and data processing.",
-      "results": "A thorough analysis of the findings with data interpretation.",
-      "discussion": "A deep dive into the implications, comparing with existing literature [citations].",
-      "conclusion": "Summary of contributions and future work.",
-      "references": ["Full list of citations in APA style"]
+      "abstract": "...",
+      "introduction": "...",
+      "methodology": "...",
+      "results": "...",
+      "discussion": "...",
+      "conclusion": "...",
+      "references": ["Full list in APA style"]
     }
     
-    Available Citations for your use:
+    Citations:
     ${papers.map((p, i) => `[${i+1}] ${p.citation}`).join("\n")}
     `;
     

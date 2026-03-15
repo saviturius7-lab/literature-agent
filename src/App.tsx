@@ -30,14 +30,25 @@ import {
   Critique, 
   ResearchReport, 
   AgentStatus, 
-  AppState 
+  AppState,
+  Contribution,
+  MathFormalization,
+  ExperimentPlan,
+  DatasetCard,
+  ReviewerCritique
 } from './types';
 import { 
   LiteratureAgent, 
   SelectionAgent,
   HypothesisAgent, 
+  NoveltyCheckerAgent,
+  ContributionAgent,
+  MathFormalizerAgent,
+  ExperimentDesignAgent,
+  DatasetGeneratorAgent,
   ExperimentRunner, 
-  CriticAgent, 
+  ReviewerSimulatorAgent,
+  RevisionAgent,
   ReportAgent 
 } from './services/agents';
 
@@ -51,8 +62,12 @@ export default function App() {
     topic: '',
     papers: [],
     hypothesis: null,
+    contributions: [],
+    mathFormalization: null,
+    experimentPlan: null,
+    datasetCard: null,
     experiment: null,
-    critique: null,
+    reviewerCritiques: [],
     report: null,
     error: null,
     iteration: 0,
@@ -76,8 +91,12 @@ export default function App() {
       error: null,
       papers: [],
       hypothesis: null,
+      contributions: [],
+      mathFormalization: null,
+      experimentPlan: null,
+      datasetCard: null,
       experiment: null,
-      critique: null,
+      reviewerCritiques: [],
       report: null,
       iteration: currentIteration
     }));
@@ -92,35 +111,102 @@ export default function App() {
           throw new Error("No papers found for this topic on arXiv.");
         }
         
-        // 1b. Selection Agent (Filter for high impact)
-        setState(prev => ({ ...prev, status: 'searching' })); // Stay in searching while selecting
+        // 1b. Selection Agent
         const papers = await SelectionAgent.selectPapers(inputTopic, rawPapers);
         setState(prev => ({ ...prev, status: 'hypothesizing', papers }));
 
         // 2. Hypothesis Agent
-        const hypothesis = await HypothesisAgent.generateHypothesis(inputTopic, papers);
-        setState(prev => ({ ...prev, status: 'experimenting', hypothesis }));
+        let hypothesis = await HypothesisAgent.generateHypothesis(inputTopic, papers);
+        
+        // 2b. Novelty Checker (Loop up to 3 times)
+        let noveltyAttempts = 0;
+        let isNovel = false;
+        while (!isNovel && noveltyAttempts < 3) {
+          setState(prev => ({ ...prev, status: 'checking_novelty', hypothesis }));
+          const novelty = await NoveltyCheckerAgent.checkNovelty(hypothesis, papers);
+          isNovel = novelty.isNovel;
+          
+          if (!isNovel) {
+            console.log(`Hypothesis not novel enough (Attempt ${noveltyAttempts + 1}), regenerating...`);
+            hypothesis = await HypothesisAgent.generateHypothesis(inputTopic, papers);
+            noveltyAttempts++;
+          }
+        }
 
-        // 3. Experiment Runner
-        const experiment = await ExperimentRunner.runExperiment(hypothesis);
-        setState(prev => ({ ...prev, status: 'critiquing', experiment }));
+        if (!isNovel) {
+          throw new Error("Failed to generate a sufficiently novel hypothesis after 3 attempts.");
+        }
 
-        // 4. Critic Agent
-        const critique = await CriticAgent.critiqueResults(hypothesis, experiment);
-        isReliable = critique.isReliable;
+        // 2c. Contribution Agent
+        setState(prev => ({ ...prev, status: 'extracting_contributions', hypothesis }));
+        const contributions = await ContributionAgent.extractContributions(hypothesis);
+        setState(prev => ({ ...prev, contributions }));
+
+        // 2d. Math Formalizer
+        setState(prev => ({ ...prev, status: 'formalizing_math' }));
+        const mathFormalization = await MathFormalizerAgent.formalize(hypothesis);
+        setState(prev => ({ ...prev, mathFormalization }));
+
+        // 3. Experiment Design
+        setState(prev => ({ ...prev, status: 'designing_experiment' }));
+        const experimentPlan = await ExperimentDesignAgent.design(hypothesis, contributions);
+        setState(prev => ({ ...prev, experimentPlan }));
+
+        // 3b. Dataset Generator
+        setState(prev => ({ ...prev, status: 'generating_dataset' }));
+        const datasetCard = await DatasetGeneratorAgent.generate(experimentPlan);
+        setState(prev => ({ ...prev, datasetCard }));
+
+        // 3c. Experiment Runner
+        setState(prev => ({ ...prev, status: 'experimenting' }));
+        const experiment = await ExperimentRunner.runExperiment(hypothesis, experimentPlan);
+        setState(prev => ({ ...prev, experiment }));
+
+        // 4. Reviewer Simulator
+        setState(prev => ({ ...prev, status: 'reviewing' }));
+        const reviewerCritiques = await ReviewerSimulatorAgent.simulate(hypothesis, experiment);
+        setState(prev => ({ ...prev, reviewerCritiques }));
+
+        // Check reliability (average rating > 7)
+        const avgRating = reviewerCritiques.reduce((acc, c) => acc + c.rating, 0) / reviewerCritiques.length;
+        isReliable = avgRating >= 7;
         
         if (!isReliable && currentIteration < MAX_ITERATIONS) {
-          console.log(`Iteration ${currentIteration} unreliable. Retrying...`);
+          console.log(`Iteration ${currentIteration} unreliable (Rating: ${avgRating.toFixed(1)}). Revising...`);
+          
+          // Update hypothesis and experiment with revised versions
+          setState(prev => ({ ...prev, status: 'revising' }));
+          const revision = await RevisionAgent.revise(hypothesis, experiment, reviewerCritiques);
+          
+          // Update hypothesis and experiment with revised versions
+          hypothesis = revision.revisedHypothesis;
+          const revisedExperiment = revision.revisedResult;
+          
           currentIteration++;
-          setState(prev => ({ ...prev, critique })); // Show the critique before retrying
+          setState(prev => ({ 
+            ...prev, 
+            hypothesis, 
+            experiment: revisedExperiment 
+          }));
+          
           await new Promise(resolve => setTimeout(resolve, 2000));
           continue;
         }
 
-        setState(prev => ({ ...prev, status: 'reporting', critique }));
+        setState(prev => ({ ...prev, status: 'reporting' }));
 
         // 5. Report Agent
-        const report = await ReportAgent.generateReport(inputTopic, papers, hypothesis, experiment, critique);
+        const report = await ReportAgent.generateReport(
+          inputTopic, 
+          papers, 
+          hypothesis, 
+          contributions,
+          mathFormalization,
+          experimentPlan,
+          datasetCard,
+          experiment, 
+          reviewerCritiques
+        );
         setState(prev => ({ ...prev, status: 'completed', report }));
         break;
       }
@@ -199,13 +285,19 @@ ${state.report.references.map(ref => `- ${ref}`).join('\n')}
 
   const steps = [
     { id: 'searching', label: 'Literature Search', icon: Search },
-    { id: 'hypothesizing', label: 'Hypothesis Generation', icon: Lightbulb },
-    { id: 'experimenting', label: 'ML Experiment', icon: FlaskConical },
-    { id: 'critiquing', label: 'Peer Critique', icon: ClipboardCheck },
+    { id: 'hypothesizing', label: 'Hypothesis & Novelty', icon: Lightbulb },
+    { id: 'formalizing_math', label: 'Math & Design', icon: BrainCircuit },
+    { id: 'experimenting', label: 'ML Execution', icon: FlaskConical },
+    { id: 'reviewing', label: 'Peer Review', icon: ClipboardCheck },
     { id: 'reporting', label: 'Final Report', icon: FileText },
   ];
 
-  const currentStepIndex = steps.findIndex(s => s.id === state.status);
+  const currentStepIndex = steps.findIndex(s => {
+    if (state.status === 'checking_novelty' || state.status === 'extracting_contributions') return s.id === 'hypothesizing';
+    if (state.status === 'designing_experiment' || state.status === 'generating_dataset') return s.id === 'formalizing_math';
+    if (state.status === 'revising') return s.id === 'reviewing';
+    return s.id === state.status;
+  });
   const isCompleted = state.status === 'completed';
 
   return (
@@ -318,8 +410,8 @@ ${state.report.references.map(ref => `- ${ref}`).join('\n')}
                 <div className="absolute top-0 right-0 p-4 opacity-5">
                   <FlaskConical className="w-24 h-24 text-pink-deep" />
                 </div>
-                <h2 className="text-[10px] font-bold uppercase tracking-widest text-pink-pale/40 mb-6">ML Metrics (RandomForest)</h2>
-                <div className="grid grid-cols-2 gap-6">
+                <h2 className="text-[10px] font-bold uppercase tracking-widest text-pink-pale/40 mb-6">Experimental Results</h2>
+                <div className="grid grid-cols-2 gap-6 mb-8">
                   <div>
                     <div className="text-3xl font-light mb-1 text-pink-deep">{(state.experiment.accuracy * 100).toFixed(1)}%</div>
                     <div className="text-[10px] uppercase tracking-wider text-pink-pale/40">Accuracy</div>
@@ -329,11 +421,48 @@ ${state.report.references.map(ref => `- ${ref}`).join('\n')}
                     <div className="text-[10px] uppercase tracking-wider text-pink-pale/40">F1 Score</div>
                   </div>
                 </div>
-                <div className="mt-8 pt-6 border-t border-pink-pale/10">
+
+                {state.experiment.baselines && state.experiment.baselines.length > 0 && (
+                  <div className="mb-8 p-4 bg-dark-bg rounded-xl border border-pink-pale/5">
+                    <h3 className="text-[9px] uppercase tracking-widest font-bold text-pink-deep mb-3">Baseline Comparison</h3>
+                    <div className="space-y-2">
+                      {state.experiment.baselines.map((b, i) => (
+                        <div key={`baseline-${i}`} className="flex justify-between items-center text-[10px]">
+                          <span className="text-pink-pale/60">{b.name}</span>
+                          <span className="font-mono text-pink-deep">{(b.accuracy * 100).toFixed(1)}%</span>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+
+                {state.experiment.ablationStudies && state.experiment.ablationStudies.length > 0 && (
+                  <div className="mb-8">
+                    <h3 className="text-[9px] uppercase tracking-widest font-bold text-pink-pale/40 mb-3">Ablation Studies</h3>
+                    <div className="space-y-3">
+                      {state.experiment.ablationStudies.map((a, i) => (
+                        <div key={`ablation-${i}`} className="text-[10px]">
+                          <div className="flex justify-between mb-1">
+                            <span className="text-pink-pale/60 italic">{a.componentRemoved} removed</span>
+                            <span className="text-pink-deep">{(a.impactOnMetric * 100).toFixed(1)}% drop</span>
+                          </div>
+                          <div className="w-full bg-dark-bg h-1 rounded-full overflow-hidden">
+                            <div 
+                              className="bg-pink-deep h-full" 
+                              style={{ width: `${Math.min(100, a.impactOnMetric * 500)}%` }}
+                            />
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+
+                <div className="pt-6 border-t border-pink-pale/10">
                   <div className="text-[10px] uppercase tracking-widest text-pink-pale/40 mb-3">Execution Logs</div>
                   <div className="space-y-2 font-mono text-[10px] text-pink-pale/60">
                     {state.experiment.logs.map((log, i) => (
-                      <div key={i} className="flex gap-2">
+                      <div key={`log-${i}`} className="flex gap-2">
                         <span className="text-pink-deep/40">[{i+1}]</span>
                         <span>{log}</span>
                       </div>
@@ -350,6 +479,7 @@ ${state.report.references.map(ref => `- ${ref}`).join('\n')}
               {/* Literature Results */}
               {state.papers.length > 0 && (
                 <motion.section 
+                  key="literature-section"
                   initial={{ opacity: 0, y: 20 }}
                   animate={{ opacity: 1, y: 0 }}
                   className="space-y-6"
@@ -387,7 +517,7 @@ ${state.report.references.map(ref => `- ${ref}`).join('\n')}
 
                         <div className="flex flex-wrap gap-2">
                           {paper.authors.slice(0, 3).map((author, j) => (
-                            <span key={`${paper.link}-auth-${j}`} className="text-[10px] px-2 py-1 bg-dark-bg rounded-md text-pink-pale/40 font-medium uppercase tracking-wider">
+                            <span key={`${paper.link}-auth-${i}-${j}`} className="text-[10px] px-2 py-1 bg-dark-bg rounded-md text-pink-pale/40 font-medium uppercase tracking-wider">
                               {author}
                             </span>
                           ))}
@@ -403,9 +533,10 @@ ${state.report.references.map(ref => `- ${ref}`).join('\n')}
                 </motion.section>
               )}
 
-              {/* Hypothesis */}
+              {/* Hypothesis & Contributions */}
               {state.hypothesis && (
                 <motion.section 
+                  key="hypothesis-section"
                   initial={{ opacity: 0, y: 20 }}
                   animate={{ opacity: 1, y: 0 }}
                   className="space-y-6 pt-12 border-t border-pink-pale/10"
@@ -428,60 +559,180 @@ ${state.report.references.map(ref => `- ${ref}`).join('\n')}
                         <p className="text-sm text-pink-pale/60 leading-relaxed">{state.hypothesis.expectedOutcome}</p>
                       </div>
                     </div>
+
+                    {state.contributions.length > 0 && (
+                      <div className="mt-8 pt-8 border-t border-pink-pale/10">
+                        <h4 className="text-[10px] uppercase tracking-widest text-pink-pale/40 mb-4">Key Contributions</h4>
+                        <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                          {state.contributions.map((c, i) => (
+                            <div key={`contribution-${i}`} className="p-4 bg-dark-bg rounded-xl border border-pink-pale/5">
+                              <div className="text-xs font-bold text-pink-deep mb-1">{c.type}</div>
+                              <p className="text-xs text-pink-pale/60">{c.description}</p>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    )}
                   </div>
                 </motion.section>
               )}
 
-              {/* Critique */}
-              {state.critique && (
+              {/* Math Formalization */}
+              {state.mathFormalization && (
                 <motion.section 
+                  key="math-section"
+                  initial={{ opacity: 0, y: 20 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  className="space-y-6 pt-12 border-t border-pink-pale/10"
+                >
+                  <div className="flex items-center justify-between">
+                    <h2 className="text-2xl font-serif italic">Mathematical Formalization</h2>
+                    <span className="text-[10px] font-bold uppercase tracking-widest text-pink-pale/40">MathFormalizerAgent</span>
+                  </div>
+                  <div className="bg-dark-surface border border-pink-pale/10 p-8 rounded-3xl">
+                    <div className="space-y-8">
+                      <div>
+                        <h4 className="text-[10px] uppercase tracking-widest text-pink-pale/40 mb-3">Problem Formulation</h4>
+                        <p className="text-sm text-pink-pale/70 leading-relaxed">{state.mathFormalization.problemFormulation}</p>
+                      </div>
+                      
+                      <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
+                        <div>
+                          <h4 className="text-[10px] uppercase tracking-widest text-pink-pale/40 mb-3">Notation</h4>
+                          <div className="space-y-2">
+                            {state.mathFormalization.notation.map((n, i) => (
+                              <div key={`notation-${i}`} className="flex gap-3 text-xs">
+                                <code className="text-pink-deep font-mono bg-dark-bg px-1.5 rounded">{n.symbol}</code>
+                                <span className="text-pink-pale/60">{n.definition}</span>
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+                        <div>
+                          <h4 className="text-[10px] uppercase tracking-widest text-pink-pale/40 mb-3">Objective Function</h4>
+                          <div className="p-4 bg-dark-bg rounded-xl font-mono text-xs text-pink-deep overflow-x-auto">
+                            {state.mathFormalization.objectiveFunction}
+                          </div>
+                        </div>
+                      </div>
+
+                      <div>
+                        <h4 className="text-[10px] uppercase tracking-widest text-pink-pale/40 mb-3">Algorithm Steps</h4>
+                        <div className="space-y-3">
+                          {state.mathFormalization.algorithmSteps.map((step, i) => (
+                            <div key={`algo-${i}`} className="flex gap-4 items-start">
+                              <span className="text-pink-deep font-mono text-xs mt-0.5">{i+1}.</span>
+                              <p className="text-sm text-pink-pale/70">{step}</p>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                </motion.section>
+              )}
+
+              {/* Experiment Plan & Dataset Card */}
+              {state.experimentPlan && (
+                <motion.section 
+                  key="plan-section"
+                  initial={{ opacity: 0, y: 20 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  className="space-y-6 pt-12 border-t border-pink-pale/10"
+                >
+                  <div className="flex items-center justify-between">
+                    <h2 className="text-2xl font-serif italic">Experimental Design</h2>
+                    <span className="text-[10px] font-bold uppercase tracking-widest text-pink-pale/40">ExperimentDesignAgent</span>
+                  </div>
+                  
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                    <div className="bg-dark-surface border border-pink-pale/10 p-6 rounded-2xl">
+                      <h4 className="text-[10px] uppercase tracking-widest text-pink-pale/40 mb-4">Protocol & Metrics</h4>
+                      <div className="space-y-4">
+                        <div>
+                          <div className="text-[9px] uppercase tracking-widest font-bold text-pink-deep mb-1">Evaluation Protocol</div>
+                          <p className="text-xs text-pink-pale/70">{state.experimentPlan.protocol}</p>
+                        </div>
+                        <div className="flex flex-wrap gap-2">
+                          {state.experimentPlan.metrics.map((m, i) => (
+                            <span key={`metric-${i}`} className="px-2 py-1 bg-dark-bg rounded text-[10px] text-pink-pale/60 border border-pink-pale/5">
+                              {m}
+                            </span>
+                          ))}
+                        </div>
+                      </div>
+                    </div>
+
+                    {state.datasetCard && (
+                      <div className="bg-dark-surface border border-pink-pale/10 p-6 rounded-2xl">
+                        <h4 className="text-[10px] uppercase tracking-widest text-pink-pale/40 mb-4">Dataset Card</h4>
+                        <div className="space-y-3">
+                          <div className="flex justify-between items-center">
+                            <span className="text-xs font-bold text-pink-deep">{state.datasetCard.name}</span>
+                            <span className="text-[10px] px-1.5 py-0.5 bg-pink-deep/10 text-pink-deep rounded border border-pink-deep/20 uppercase">{state.datasetCard.size}</span>
+                          </div>
+                          <p className="text-[11px] text-pink-pale/60 leading-relaxed">{state.datasetCard.description}</p>
+                          <div className="flex flex-wrap gap-1.5">
+                            {state.datasetCard.features.map((f, i) => (
+                              <span key={`feature-${i}`} className="text-[9px] text-pink-pale/40 font-mono">#{f}</span>
+                            ))}
+                          </div>
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                </motion.section>
+              )}
+
+              {/* Reviewer Critiques */}
+              {state.reviewerCritiques.length > 0 && (
+                <motion.section 
+                  key={`critique-section-${state.iteration}`}
                   initial={{ opacity: 0, y: 20 }}
                   animate={{ opacity: 1, y: 0 }}
                   className="space-y-6 pt-12 border-t border-pink-pale/10"
                 >
                   <div className="flex items-center justify-between">
                     <div className="flex items-center gap-3">
-                      <h2 className="text-2xl font-serif italic">Peer Critique</h2>
+                      <h2 className="text-2xl font-serif italic">Simulated Peer Review</h2>
                       <span className="text-[10px] text-pink-pale/40 font-mono">(Iteration {state.iteration})</span>
-                      {state.critique.isReliable ? (
-                        <span className="px-2 py-0.5 bg-emerald-900/30 text-emerald-400 text-[10px] font-bold rounded uppercase tracking-wider border border-emerald-500/20">Reliable</span>
-                      ) : (
-                        <span className="px-2 py-0.5 bg-amber-900/30 text-amber-400 text-[10px] font-bold rounded uppercase tracking-wider border border-amber-500/20">Needs Improvement</span>
-                      )}
                     </div>
-                    <span className="text-[10px] font-bold uppercase tracking-widest text-pink-pale/40">CriticAgent</span>
+                    <span className="text-[10px] font-bold uppercase tracking-widest text-pink-pale/40">ReviewerSimulatorAgent</span>
                   </div>
-                  <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-                    <div className="p-6 bg-emerald-900/10 border border-emerald-500/20 rounded-2xl">
-                      <h4 className="text-[10px] uppercase tracking-widest text-emerald-400 font-bold mb-4">Strengths</h4>
-                      <ul className="space-y-2">
-                        {state.critique.strengths.map((s, i) => (
-                          <li key={i} className="text-sm text-emerald-100/70 flex gap-2">
-                            <span className="text-emerald-500">•</span> {s}
-                          </li>
-                        ))}
-                      </ul>
-                    </div>
-                    <div className="p-6 bg-amber-900/10 border border-amber-500/20 rounded-2xl">
-                      <h4 className="text-[10px] uppercase tracking-widest text-amber-400 font-bold mb-4">Weaknesses</h4>
-                      <ul className="space-y-2">
-                        {state.critique.weaknesses.map((w, i) => (
-                          <li key={i} className="text-sm text-amber-100/70 flex gap-2">
-                            <span className="text-amber-500">•</span> {w}
-                          </li>
-                        ))}
-                      </ul>
-                    </div>
-                  </div>
-                  <div className="p-6 bg-dark-surface border border-pink-pale/10 rounded-2xl">
-                    <h4 className="text-[10px] uppercase tracking-widest text-pink-pale/40 font-bold mb-4">Future Suggestions</h4>
-                    <div className="flex flex-wrap gap-2">
-                      {state.critique.suggestions.map((s, i) => (
-                        <span key={i} className="px-3 py-1 bg-dark-bg rounded-full text-xs text-pink-pale/60 border border-pink-pale/5">
-                          {s}
-                        </span>
-                      ))}
-                    </div>
+                  
+                  <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+                    {state.reviewerCritiques.map((critique, i) => (
+                      <div key={`reviewer-${i}`} className="p-6 bg-dark-surface border border-pink-pale/10 rounded-2xl flex flex-col">
+                        <div className="flex justify-between items-center mb-4">
+                          <span className="text-[10px] font-bold uppercase tracking-widest text-pink-pale/40">Reviewer #{i+1}</span>
+                          <div className={cn(
+                            "px-2 py-0.5 rounded text-[10px] font-bold border",
+                            critique.rating >= 7 ? "bg-emerald-900/30 text-emerald-400 border-emerald-500/20" :
+                            critique.rating >= 5 ? "bg-amber-900/30 text-amber-400 border-amber-500/20" :
+                            "bg-pink-900/30 text-pink-400 border-pink-500/20"
+                          )}>
+                            Score: {critique.rating}/10
+                          </div>
+                        </div>
+                        
+                        <div className="space-y-4 flex-1">
+                          <div>
+                            <div className="text-[9px] uppercase tracking-widest font-bold text-pink-deep mb-1">Weaknesses</div>
+                            <ul className="space-y-1">
+                              {critique.weaknesses.map((w, j) => (
+                                <li key={`w-${i}-${j}`} className="text-[11px] text-pink-pale/60 flex gap-1.5">
+                                  <span className="text-pink-deep opacity-50">•</span> {w}
+                                </li>
+                              ))}
+                            </ul>
+                          </div>
+                          <div>
+                            <div className="text-[9px] uppercase tracking-widest font-bold text-pink-deep mb-1">Novelty Check</div>
+                            <p className="text-[11px] text-pink-pale/60 italic leading-relaxed">"{critique.noveltyCritique}"</p>
+                          </div>
+                        </div>
+                      </div>
+                    ))}
                   </div>
                 </motion.section>
               )}
@@ -489,6 +740,7 @@ ${state.report.references.map(ref => `- ${ref}`).join('\n')}
               {/* Final Report */}
               {state.report && (
                 <motion.section 
+                  key="report-section"
                   initial={{ opacity: 0, y: 20 }}
                   animate={{ opacity: 1, y: 0 }}
                   className="space-y-8 pt-12 border-t border-[#1A1A1A]/10"
@@ -540,7 +792,7 @@ ${state.report.references.map(ref => `- ${ref}`).join('\n')}
                       <h3 className="text-xs uppercase tracking-widest font-bold mb-4 text-pink-deep">References</h3>
                       <ul className="space-y-2">
                         {state.report.references.map((ref, i) => (
-                          <li key={i} className="text-[11px] text-pink-pale/40 font-mono leading-relaxed">
+                          <li key={`ref-${i}`} className="text-[11px] text-pink-pale/40 font-mono leading-relaxed">
                             <span className="text-pink-deep">[{i+1}]</span> {ref}
                           </li>
                         ))}
