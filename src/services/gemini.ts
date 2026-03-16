@@ -1,82 +1,96 @@
-async function withRetry<T>(fn: (attempt: number) => Promise<T>, retries = 15, delay = 1000): Promise<T> {
-  for (let i = 0; i < retries; i++) {
+import { GoogleGenAI } from "@google/genai";
+
+// Helper to collect keys from import.meta.env
+function collectKeys(): string[] {
+  const keys = (import.meta as any).env.VITE_GEMINI_KEYS;
+  if (Array.isArray(keys)) return keys;
+  if (typeof keys === 'string') {
     try {
-      return await fn(i);
+      return JSON.parse(keys);
+    } catch (e) {
+      return [];
+    }
+  }
+  return [];
+}
+
+const allGeminiKeys = collectKeys();
+let currentKeyIndex = 0;
+
+// Track failed keys to avoid them in the same session
+const failedKeys = new Set<string>();
+
+async function withRetry<T>(fn: (ai: GoogleGenAI) => Promise<T>, retries = 15): Promise<T> {
+  const keys = allGeminiKeys.filter(k => !failedKeys.has(k));
+  const availableKeys = keys.length > 0 ? keys : allGeminiKeys; // Fallback to all if all "failed"
+  
+  let lastError: any;
+  
+  for (let i = 0; i < retries; i++) {
+    const apiKey = availableKeys[currentKeyIndex % availableKeys.length];
+    currentKeyIndex++;
+    
+    const ai = new GoogleGenAI({ apiKey });
+    
+    try {
+      return await fn(ai);
     } catch (error: any) {
-      const status = error.status || 0;
+      lastError = error;
       const message = error.message || "";
+      const status = error.status || 0;
       
       const isRateLimit = message.includes("429") || status === 429 || message.includes("RESOURCE_EXHAUSTED");
-      const isAuthError = message.includes("401") || status === 401;
-      const isBalanceError = message.includes("402") || status === 402;
-      const isServerError = message.includes("500") || status === 500;
-                          
-      if (i < retries - 1 && (isRateLimit || isAuthError || isBalanceError || isServerError)) {
-        const reason = isRateLimit ? "Rate limit" : isAuthError ? "Auth error" : isBalanceError ? "Balance error" : "Server error";
-        console.warn(`${reason} hit (attempt ${i + 1}), retrying with different provider/key...`);
-        
-        if (isRateLimit || isServerError) {
-          await new Promise(resolve => setTimeout(resolve, delay));
-          delay *= 1.5;
-        }
+      const isAuthError = message.includes("401") || status === 401 || message.includes("API_KEY_INVALID");
+      
+      if (isAuthError) {
+        failedKeys.add(apiKey);
+      }
+      
+      if (i < retries - 1 && (isRateLimit || isAuthError)) {
+        console.warn(`Gemini API error (${isRateLimit ? "Rate limit" : "Auth error"}), retrying with next key...`);
         continue;
       }
       throw error;
     }
   }
-  throw new Error("Max retries reached. All providers and keys failed. Please check your API balances and keys in the environment variables.");
+  throw lastError || new Error("Max retries reached");
 }
 
 export async function embedText(text: string): Promise<number[]> {
-  return withRetry(async () => {
-    const response = await fetch("/api/embed", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ text })
+  return withRetry(async (ai) => {
+    const response = await ai.models.embedContent({
+      model: 'gemini-embedding-2-preview',
+      contents: [text],
     });
-    if (!response.ok) {
-      const errorData = await response.json().catch(() => ({}));
-      const error = new Error(errorData.error || `Embed failed: ${response.status}`);
-      (error as any).status = response.status;
-      throw error;
-    }
-    const data = await response.json();
-    return data.embedding;
+    return response.embeddings[0].values;
   });
 }
 
 export async function generateJSON<T>(prompt: string, systemInstruction?: string): Promise<T> {
-  return withRetry(async (attempt) => {
-    const response = await fetch("/api/generate-json", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ prompt, systemInstruction, attempt })
+  return withRetry(async (ai) => {
+    const response = await ai.models.generateContent({
+      model: "gemini-3-flash-preview",
+      contents: prompt,
+      config: { 
+        systemInstruction,
+        responseMimeType: "application/json"
+      },
     });
-    if (!response.ok) {
-      const errorData = await response.json().catch(() => ({}));
-      const error = new Error(errorData.error || `Generate JSON failed: ${response.status}`);
-      (error as any).status = response.status;
-      throw error;
-    }
-    const data = await response.json();
-    return JSON.parse(data.text) as T;
+    
+    const text = response.text || "{}";
+    // Clean JSON if needed (sometimes model adds markdown blocks)
+    const cleaned = text.replace(/^```json\n?/, "").replace(/\n?```$/, "").trim();
+    return JSON.parse(cleaned) as T;
   });
 }
 
 export async function generateText(prompt: string, systemInstruction?: string): Promise<string> {
-  return withRetry(async (attempt) => {
-    const response = await fetch("/api/generate-text", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ prompt, systemInstruction, attempt })
+  return withRetry(async (ai) => {
+    const response = await ai.models.generateContent({
+      model: "gemini-3-flash-preview",
+      contents: prompt,
+      config: { systemInstruction },
     });
-    if (!response.ok) {
-      const errorData = await response.json().catch(() => ({}));
-      const error = new Error(errorData.error || `Generate Text failed: ${response.status}`);
-      (error as any).status = response.status;
-      throw error;
-    }
-    const data = await response.json();
-    return data.text;
+    return response.text || "";
   });
 }

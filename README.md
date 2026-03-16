@@ -2,7 +2,8 @@
 
 A multi-agent research system that fetches arXiv papers, generates hypotheses, runs simulated ML experiments, and produces peer-reviewed reports with RAG-based hallucination prevention.
 
-## Features
+
+This contains everything you need to run your app locally.
 
 - **RAG-Based Research**: Vector database storage reduces hallucinations by grounding claims in retrieved papers.
 - **Multi-Agent Workflow**: 12+ specialized agents coordinate to produce a full research pipeline.
@@ -10,14 +11,11 @@ A multi-agent research system that fetches arXiv papers, generates hypotheses, r
 - **Enhanced Visuals**: Animated UI with gradient effects, smooth transitions, and interactive components.
 - **Cross-Platform Ready**: Works on Vercel, Netlify, and other serverless platforms.
 
+
 ## Run Locally
 
-**Prerequisites:** Node.js 18+
+**Prerequisites:**  Node.js
 
-1. **Install dependencies:**
-   ```bash
-   npm install
-   ```
 
 2. **Configure environment variables:**
 
@@ -66,3 +64,8 @@ This helps maintain reliability under free-tier limits.
 - **Backend**: Express.
 - **Database**: Supabase (PostgreSQL + pgvector).
 - **Data Source**: arXiv.
+1. Install dependencies:
+   `npm install`
+2. Set the `GEMINI_API_KEY` in [.env.local](.env.local) to your Gemini API key
+3. Run the app:
+   `npm run dev`
