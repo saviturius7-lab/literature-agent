@@ -1,19 +1,18 @@
 import { XMLParser } from "fast-xml-parser";
-import {
-  Paper,
-  Hypothesis,
-  ExperimentResult,
-  ResearchReport,
-  Contribution,
-  MathFormalization,
-  ExperimentPlan,
-  DatasetCard,
+import { 
+  Paper, 
+  Hypothesis, 
+  ExperimentResult, 
+  ResearchReport, 
+  Contribution, 
+  MathFormalization, 
+  ExperimentPlan, 
+  DatasetCard, 
   ReviewerCritique,
   AblationStudy,
   FailureCase
 } from "../types";
 import { generateJSON, embedText } from "./gemini";
-import { RAGService } from "./supabase";
 
 const parser = new XMLParser();
 
@@ -51,23 +50,13 @@ export const SearchQueryAgent = {
 };
 
 export const LiteratureAgent = {
-  async fetchPapers(topic: string, onRAGStatus?: (usingRAG: boolean) => void): Promise<Paper[]> {
-    console.log(`[RAG] Checking for cached papers on topic: "${topic}"`);
-    const cachedPapers = await RAGService.getPapersByTopic(topic, 8);
-
-    if (cachedPapers.length >= 5) {
-      console.log(`[RAG] Found ${cachedPapers.length} cached papers, using them to avoid hallucination`);
-      if (onRAGStatus) onRAGStatus(true);
-      return cachedPapers;
-    }
-
-    if (onRAGStatus) onRAGStatus(false);
-
+  async fetchPapers(topic: string): Promise<Paper[]> {
+    // First, refine the query
     const refinedQuery = await SearchQueryAgent.refineQuery(topic);
     console.log(`Refined query: "${refinedQuery}" for topic: "${topic}"`);
-
+    
     const url = `/api/arxiv?q=${encodeURIComponent(refinedQuery)}`;
-
+    
     try {
       const response = await fetch(url);
       if (!response.ok) {
@@ -75,14 +64,15 @@ export const LiteratureAgent = {
       }
       const xmlData = await response.text();
       const jsonObj = parser.parse(xmlData);
-
+      
       if (!jsonObj || !jsonObj.feed) {
         console.warn("ArXiv response structure unexpected or empty. XML:", xmlData.slice(0, 500));
         return [];
       }
-
+      
       const entries = jsonObj.feed.entry;
       if (!entries) {
+        // If refined query failed, try the original topic as a fallback
         if (refinedQuery !== topic) {
           console.log("Refined query returned no results, falling back to original topic...");
           const fallbackUrl = `/api/arxiv?q=${encodeURIComponent(topic)}`;
@@ -92,33 +82,17 @@ export const LiteratureAgent = {
             const fallbackJson = parser.parse(fallbackXml);
             const fallbackEntries = fallbackJson?.feed?.entry;
             if (fallbackEntries) {
-              const papers = this.processEntries(fallbackEntries);
-              await this.storePapersInRAG(papers, topic);
-              return papers;
+              return this.processEntries(fallbackEntries);
             }
           }
         }
         return [];
       }
-
-      const papers = this.processEntries(entries);
-      await this.storePapersInRAG(papers, topic);
-      return papers;
+      
+      return this.processEntries(entries);
     } catch (error: any) {
       console.error("LiteratureAgent error:", error);
       throw new Error(`Research workflow error: ${error.message || "Failed to fetch from arXiv via proxy. Please try again."}`);
-    }
-  },
-
-  async storePapersInRAG(papers: Paper[], topic: string): Promise<void> {
-    console.log(`[RAG] Storing ${papers.length} papers for future use`);
-    for (const paper of papers) {
-      try {
-        const embedding = await embedText(`${paper.title} ${paper.summary}`);
-        await RAGService.storePaper(paper, embedding, topic);
-      } catch (err) {
-        console.warn(`[RAG] Failed to store paper: ${paper.title}`, err);
-      }
     }
   },
 
@@ -349,44 +323,38 @@ export const DatasetGeneratorAgent = {
 
 export const ExperimentRunner = {
   async runExperiment(hypothesis: Hypothesis, plan: ExperimentPlan): Promise<ExperimentResult> {
-    const prompt = `Simulate the execution of the following experiment:
-    Hypothesis: ${hypothesis.title}
-    Plan: ${plan.protocol}
-    Baselines: ${plan.baselines.join(", ")}
-    
-    Generate realistic experimental results, including:
-    1. Accuracy and F1 Score (Proposed model should generally outperform baselines slightly if the hypothesis is sound).
-    2. Baseline results (Accuracy for each baseline).
-    3. Ablation studies (Impact of removing key components).
-    4. Failure cases (Specific examples where the model fails).
-    5. Implementation details (Frameworks, hardware, hyperparameters).
-    6. A set of 5-10 execution logs.
-    
-    Return a JSON object:
-    {
-      "accuracy": 0.89,
-      "f1Score": 0.87,
-      "baselines": [
-        { "name": "Baseline 1", "accuracy": 0.82 }
-      ],
-      "ablationStudies": [
-        { "componentRemoved": "Attention", "impactOnMetric": 0.05 }
-      ],
-      "failureCases": [
-        { "example": "...", "explanation": "..." }
-      ],
-      "implementationDetails": "...",
-      "logs": ["...", "..."]
-    }`;
-    
-    const result = await generateJSON<ExperimentResult>(prompt, "You are a high-performance compute cluster simulating ML experiments.");
-    return {
-      ...result,
-      baselines: result.baselines || [],
-      ablationStudies: result.ablationStudies || [],
-      failureCases: result.failureCases || [],
-      logs: result.logs || []
-    };
+    try {
+      const response = await fetch("/api/run-experiment", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ hypothesis, plan })
+      });
+      
+      const data = await response.json();
+      
+      if (!response.ok) {
+        let stageInfo = "";
+        if (data.stage) {
+          const stages: Record<string, string> = {
+            "validation": "Input Validation",
+            "data_preparation": "Data Preparation",
+            "model_training_rf": "Proposed Model Training (Random Forest)",
+            "model_training_lr": "Baseline Model Training (Logistic Regression)",
+            "unknown": "General Execution"
+          };
+          stageInfo = ` [Stage: ${stages[data.stage] || data.stage}]`;
+        }
+        throw new Error(`Experiment failed during ${stageInfo}: ${data.error || response.statusText}`);
+      }
+      
+      return data;
+    } catch (error: any) {
+      console.error("ExperimentRunner error:", error);
+      if (error.name === 'TypeError' && error.message.includes('fetch')) {
+        throw new Error("Network error: Could not connect to the experiment server. Please check your connection.");
+      }
+      throw error;
+    }
   }
 };
 

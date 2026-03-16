@@ -1,5 +1,5 @@
 {
   "name": "Literature Agent",
-  "description": "A multi-agent research system that fetches arXiv papers, generates hypotheses, runs simulated ML experiments, and produces critiqued reports.",
+  "description": "A multi-agent research system that fetches arXiv papers, generates hypotheses, trains actual ML models (Random Forest, Logistic Regression) for experiments, and produces critiqued reports.",
   "requestFramePermissions": []
 }
