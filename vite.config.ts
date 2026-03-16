@@ -8,7 +8,12 @@ export default defineConfig(({mode}) => {
   return {
     plugins: [react(), tailwindcss()],
     define: {
-      'process.env.GEMINI_API_KEY': JSON.stringify(env.GEMINI_API_KEY),
+      'import.meta.env.VITE_GEMINI_KEYS': JSON.stringify(
+        Object.keys(env)
+          .filter(key => key === 'GEMINI_API_KEY' || key.startsWith('GEMINI_API_KEY_'))
+          .map(key => env[key])
+          .filter(val => val && val.length > 10 && !val.includes("TODO"))
+      ),
     },
     resolve: {
       alias: {
@@ -16,6 +21,7 @@ export default defineConfig(({mode}) => {
       },
     },
     server: {
+      // HMR is disabled in AI Studio via DISABLE_HMR env var.
       // Do not modifyâfile watching is disabled to prevent flickering during agent edits.
       hmr: process.env.DISABLE_HMR !== 'true',
     },
