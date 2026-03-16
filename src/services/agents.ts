@@ -1,18 +1,19 @@
 import { XMLParser } from "fast-xml-parser";
-import { 
-  Paper, 
-  Hypothesis, 
-  ExperimentResult, 
-  ResearchReport, 
-  Contribution, 
-  MathFormalization, 
-  ExperimentPlan, 
-  DatasetCard, 
+import {
+  Paper,
+  Hypothesis,
+  ExperimentResult,
+  ResearchReport,
+  Contribution,
+  MathFormalization,
+  ExperimentPlan,
+  DatasetCard,
   ReviewerCritique,
   AblationStudy,
   FailureCase
 } from "../types";
 import { generateJSON, embedText } from "./gemini";
+import { RAGService } from "./supabase";
 
 const parser = new XMLParser();
 
@@ -50,13 +51,23 @@ export const SearchQueryAgent = {
 };
 
 export const LiteratureAgent = {
-  async fetchPapers(topic: string): Promise<Paper[]> {
-    // First, refine the query
+  async fetchPapers(topic: string, onRAGStatus?: (usingRAG: boolean) => void): Promise<Paper[]> {
+    console.log(`[RAG] Checking for cached papers on topic: "${topic}"`);
+    const cachedPapers = await RAGService.getPapersByTopic(topic, 8);
+
+    if (cachedPapers.length >= 5) {
+      console.log(`[RAG] Found ${cachedPapers.length} cached papers, using them to avoid hallucination`);
+      if (onRAGStatus) onRAGStatus(true);
+      return cachedPapers;
+    }
+
+    if (onRAGStatus) onRAGStatus(false);
+
     const refinedQuery = await SearchQueryAgent.refineQuery(topic);
     console.log(`Refined query: "${refinedQuery}" for topic: "${topic}"`);
-    
+
     const url = `/api/arxiv?q=${encodeURIComponent(refinedQuery)}`;
-    
+
     try {
       const response = await fetch(url);
       if (!response.ok) {
@@ -64,15 +75,14 @@ export const LiteratureAgent = {
       }
       const xmlData = await response.text();
       const jsonObj = parser.parse(xmlData);
-      
+
       if (!jsonObj || !jsonObj.feed) {
         console.warn("ArXiv response structure unexpected or empty. XML:", xmlData.slice(0, 500));
         return [];
       }
-      
+
       const entries = jsonObj.feed.entry;
       if (!entries) {
-        // If refined query failed, try the original topic as a fallback
         if (refinedQuery !== topic) {
           console.log("Refined query returned no results, falling back to original topic...");
           const fallbackUrl = `/api/arxiv?q=${encodeURIComponent(topic)}`;
@@ -82,17 +92,33 @@ export const LiteratureAgent = {
             const fallbackJson = parser.parse(fallbackXml);
             const fallbackEntries = fallbackJson?.feed?.entry;
             if (fallbackEntries) {
-              return this.processEntries(fallbackEntries);
+              const papers = this.processEntries(fallbackEntries);
+              await this.storePapersInRAG(papers, topic);
+              return papers;
             }
           }
         }
         return [];
       }
-      
-      return this.processEntries(entries);
+
+      const papers = this.processEntries(entries);
+      await this.storePapersInRAG(papers, topic);
+      return papers;
     } catch (error: any) {
       console.error("LiteratureAgent error:", error);
       throw new Error(`Research workflow error: ${error.message || "Failed to fetch from arXiv via proxy. Please try again."}`);
+    }
+  },
+
+  async storePapersInRAG(papers: Paper[], topic: string): Promise<void> {
+    console.log(`[RAG] Storing ${papers.length} papers for future use`);
+    for (const paper of papers) {
+      try {
+        const embedding = await embedText(`${paper.title} ${paper.summary}`);
+        await RAGService.storePaper(paper, embedding, topic);
+      } catch (err) {
+        console.warn(`[RAG] Failed to store paper: ${paper.title}`, err);
+      }
     }
   },
 

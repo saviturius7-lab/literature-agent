@@ -1,21 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { 
-  Search, 
-  Lightbulb, 
-  FlaskConical, 
-  ClipboardCheck, 
-  FileText, 
-  Loader2, 
-  ChevronRight, 
-  AlertCircle,
-  ExternalLink,
-  CheckCircle2,
-  BrainCircuit,
-  Copy,
-  Download,
-  Printer,
-  RefreshCw
-} from 'lucide-react';
+import { Search, Lightbulb, FlaskConical, ClipboardCheck, FileText, Loader as Loader2, ChevronRight, CircleAlert as AlertCircle, ExternalLink, CircleCheck as CheckCircle2, BrainCircuit, Copy, Download, Printer, RefreshCw } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { clsx, type ClassValue } from 'clsx';
 import { twMerge } from 'tailwind-merge';
@@ -77,6 +61,7 @@ export default function App() {
 
   const [inputTopic, setInputTopic] = useState('');
   const [copiedIndex, setCopiedIndex] = useState<number | null>(null);
+  const [usingRAG, setUsingRAG] = useState(false);
   const reportRef = useRef<HTMLDivElement>(null);
 
   const runResearch = async () => {
@@ -108,7 +93,10 @@ export default function App() {
         setState(prev => ({ ...prev, iteration: currentIteration, status: 'searching' }));
 
         // 1. Literature Agent
-        const rawPapers = await LiteratureAgent.fetchPapers(inputTopic);
+        setUsingRAG(false);
+        const rawPapers = await LiteratureAgent.fetchPapers(inputTopic, (isUsingRAG) => {
+          setUsingRAG(isUsingRAG);
+        });
         if (rawPapers.length === 0) {
           throw new Error("No papers found for this topic on arXiv.");
         }
@@ -331,15 +319,50 @@ ${(state.report.references || []).map(ref => `- ${ref}`).join('\n')}
   const isCompleted = state.status === 'completed';
 
   return (
-    <div className="min-h-screen bg-dark-bg text-pink-pale font-sans selection:bg-pink-deep selection:text-white">
+    <div className="min-h-screen bg-dark-bg text-pink-pale font-sans selection:bg-pink-deep selection:text-white relative overflow-hidden">
+      {/* Animated Background Elements */}
+      <div className="fixed inset-0 pointer-events-none opacity-30 overflow-hidden">
+        <motion.div
+          className="absolute top-0 left-1/4 w-96 h-96 bg-pink-deep/5 rounded-full blur-3xl"
+          animate={{
+            scale: [1, 1.2, 1],
+            opacity: [0.3, 0.5, 0.3],
+          }}
+          transition={{ duration: 8, repeat: Infinity, ease: "easeInOut" }}
+        />
+        <motion.div
+          className="absolute bottom-0 right-1/4 w-96 h-96 bg-pink-deep/5 rounded-full blur-3xl"
+          animate={{
+            scale: [1, 1.3, 1],
+            opacity: [0.3, 0.4, 0.3],
+          }}
+          transition={{ duration: 10, repeat: Infinity, ease: "easeInOut", delay: 1 }}
+        />
+        <motion.div
+          className="absolute top-1/2 left-1/2 w-96 h-96 bg-pink-deep/5 rounded-full blur-3xl"
+          animate={{
+            scale: [1, 1.1, 1],
+            opacity: [0.2, 0.4, 0.2],
+          }}
+          transition={{ duration: 12, repeat: Infinity, ease: "easeInOut", delay: 2 }}
+        />
+      </div>
+
       {/* Header */}
-      <header className="border-b border-pink-pale/10 bg-dark-surface/80 backdrop-blur-md sticky top-0 z-50">
+      <header className="border-b border-pink-pale/10 bg-dark-surface/80 backdrop-blur-md sticky top-0 z-50 relative">
+        <div className="absolute inset-x-0 bottom-0 h-px bg-gradient-to-r from-transparent via-pink-deep/50 to-transparent" />
         <div className="max-w-6xl mx-auto px-6 h-16 flex items-center justify-between">
-          <div className="flex items-center gap-2">
-            <div className="w-8 h-8 bg-pink-deep rounded-lg flex items-center justify-center">
+          <div className="flex items-center gap-3">
+            <motion.div
+              className="w-10 h-10 bg-gradient-to-br from-pink-deep to-pink-deep/60 rounded-xl flex items-center justify-center shadow-lg shadow-pink-deep/20"
+              animate={{ rotate: [0, 5, -5, 0] }}
+              transition={{ duration: 4, repeat: Infinity, ease: "easeInOut" }}
+            >
               <BrainCircuit className="text-white w-5 h-5" />
-            </div>
-            <h1 className="text-lg font-semibold tracking-tight italic serif">Literature Agent</h1>
+            </motion.div>
+            <h1 className="text-xl font-semibold tracking-tight italic serif bg-gradient-to-r from-pink-pale to-pink-deep bg-clip-text text-transparent">
+              Literature Agent
+            </h1>
           </div>
           
             <div className="flex items-center gap-4">
@@ -376,28 +399,44 @@ ${(state.report.references || []).map(ref => `- ${ref}`).join('\n')}
         <div className="mb-16">
           <div className="flex items-center justify-between relative">
             <div className="absolute top-1/2 left-0 right-0 h-[1px] bg-pink-pale/10 -translate-y-1/2 z-0" />
+            <motion.div
+              className="absolute top-1/2 left-0 h-[2px] bg-gradient-to-r from-pink-deep to-pink-deep/50 -translate-y-1/2 z-0"
+              initial={{ width: '0%' }}
+              animate={{ width: `${(currentStepIndex / (steps.length - 1)) * 100}%` }}
+              transition={{ duration: 0.5, ease: "easeInOut" }}
+            />
             {(steps || []).map((step, idx) => {
               const Icon = step.icon;
               const isActive = state.status === step.id;
               const isPast = currentStepIndex > idx || isCompleted;
-              
+
               return (
-                <div key={step.id} className="relative z-10 flex flex-col items-center gap-3">
-                  <div className={cn(
-                    "w-12 h-12 rounded-full flex items-center justify-center transition-all duration-500 border-2",
-                    isActive ? "bg-pink-deep border-pink-deep text-white scale-110 shadow-lg shadow-pink-deep/20" : 
-                    isPast ? "bg-dark-bg border-pink-deep text-pink-deep" : 
-                    "bg-dark-bg border-pink-pale/10 text-pink-pale/20"
-                  )}>
+                <motion.div
+                  key={step.id}
+                  className="relative z-10 flex flex-col items-center gap-3"
+                  initial={{ scale: 0.8, opacity: 0 }}
+                  animate={{ scale: 1, opacity: 1 }}
+                  transition={{ delay: idx * 0.1 }}
+                >
+                  <motion.div
+                    className={cn(
+                      "w-12 h-12 rounded-full flex items-center justify-center transition-all duration-500 border-2",
+                      isActive ? "bg-pink-deep border-pink-deep text-white scale-110 shadow-lg shadow-pink-deep/20" :
+                      isPast ? "bg-dark-bg border-pink-deep text-pink-deep" :
+                      "bg-dark-bg border-pink-pale/10 text-pink-pale/20"
+                    )}
+                    animate={isActive ? { scale: [1, 1.1, 1] } : {}}
+                    transition={{ duration: 2, repeat: isActive ? Infinity : 0 }}
+                  >
                     {isPast ? <CheckCircle2 className="w-6 h-6" /> : <Icon className="w-6 h-6" />}
-                  </div>
+                  </motion.div>
                   <span className={cn(
                     "text-[10px] uppercase tracking-widest font-bold transition-colors",
                     isActive ? "text-pink-pale" : "text-pink-pale/40"
                   )}>
                     {step.label}
                   </span>
-                </div>
+                </motion.div>
               );
             })}
           </div>
@@ -414,13 +453,27 @@ ${(state.report.references || []).map(ref => `- ${ref}`).join('\n')}
                   <p className="text-sm text-pink-pale/60 italic">Enter a topic to begin the multi-agent research workflow.</p>
                 )}
                 {state.status !== 'idle' && (
-                  <div className="flex items-center gap-3">
-                    {state.status !== 'completed' && state.status !== 'error' && (
-                      <Loader2 className="w-4 h-4 animate-spin text-pink-deep" />
+                  <div className="space-y-3">
+                    <div className="flex items-center gap-3">
+                      {state.status !== 'completed' && state.status !== 'error' && (
+                        <Loader2 className="w-4 h-4 animate-spin text-pink-deep" />
+                      )}
+                      <span className="text-sm font-medium capitalize">
+                        {state.status.replace('-', ' ')}...
+                      </span>
+                    </div>
+                    {usingRAG && state.papers.length > 0 && (
+                      <motion.div
+                        initial={{ opacity: 0, y: -10 }}
+                        animate={{ opacity: 1, y: 0 }}
+                        className="flex items-center gap-2 p-3 bg-emerald-900/20 border border-emerald-500/20 rounded-xl"
+                      >
+                        <div className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse" />
+                        <span className="text-[10px] text-emerald-400 font-bold uppercase tracking-wider">
+                          Using Cached Papers (RAG)
+                        </span>
+                      </motion.div>
                     )}
-                    <span className="text-sm font-medium capitalize">
-                      {state.status.replace('-', ' ')}...
-                    </span>
                   </div>
                 )}
                 {state.error && (
@@ -536,44 +589,62 @@ ${(state.report.references || []).map(ref => `- ${ref}`).join('\n')}
                   </div>
                   <div className="space-y-4">
                     {(state.papers || []).map((paper, i) => (
-                      <div key={`${paper.link}-${i}`} className="group p-6 bg-dark-surface border border-pink-pale/10 rounded-2xl hover:border-pink-deep/30 transition-all">
-                        <div className="flex justify-between items-start gap-4 mb-3">
-                          <h3 className="font-semibold text-lg leading-tight group-hover:text-pink-deep transition-colors">
-                            {paper.title}
-                          </h3>
-                          <div className="flex gap-2">
-                            <button 
-                              onClick={() => copyToClipboard(paper.citation, i)}
-                              className="text-pink-pale/40 hover:text-pink-deep transition-colors p-1"
-                              title="Copy Citation"
-                            >
-                              {copiedIndex === i ? <CheckCircle2 className="w-4 h-4 text-emerald-500" /> : <Copy className="w-4 h-4" />}
-                            </button>
-                            <a href={paper.link} target="_blank" rel="noreferrer" className="text-pink-pale/40 hover:text-pink-deep p-1">
-                              <ExternalLink className="w-4 h-4" />
-                            </a>
+                      <motion.div
+                        key={`${paper.link}-${i}`}
+                        initial={{ opacity: 0, x: -20 }}
+                        animate={{ opacity: 1, x: 0 }}
+                        transition={{ delay: i * 0.1 }}
+                        className="group p-6 bg-dark-surface border border-pink-pale/10 rounded-2xl hover:border-pink-deep/30 transition-all hover:shadow-xl hover:shadow-pink-deep/5 relative overflow-hidden"
+                      >
+                        <div className="absolute top-0 right-0 w-32 h-32 bg-pink-deep/5 rounded-full blur-2xl group-hover:bg-pink-deep/10 transition-all" />
+                        <div className="relative z-10">
+                          <div className="flex justify-between items-start gap-4 mb-3">
+                            <h3 className="font-semibold text-lg leading-tight group-hover:text-pink-deep transition-colors">
+                              {paper.title}
+                            </h3>
+                            <div className="flex gap-2">
+                              <motion.button
+                                whileHover={{ scale: 1.1 }}
+                                whileTap={{ scale: 0.9 }}
+                                onClick={() => copyToClipboard(paper.citation, i)}
+                                className="text-pink-pale/40 hover:text-pink-deep transition-colors p-1"
+                                title="Copy Citation"
+                              >
+                                {copiedIndex === i ? <CheckCircle2 className="w-4 h-4 text-emerald-500" /> : <Copy className="w-4 h-4" />}
+                              </motion.button>
+                              <motion.a
+                                whileHover={{ scale: 1.1 }}
+                                whileTap={{ scale: 0.9 }}
+                                href={paper.link}
+                                target="_blank"
+                                rel="noreferrer"
+                                className="text-pink-pale/40 hover:text-pink-deep p-1"
+                              >
+                                <ExternalLink className="w-4 h-4" />
+                              </motion.a>
+                            </div>
+                          </div>
+                          <p className="text-sm text-pink-pale/60 line-clamp-3 mb-4 leading-relaxed">{paper.summary}</p>
+
+                          <div className="mb-4 p-3 bg-dark-bg rounded-xl border border-pink-pale/5">
+                            <div className="text-[9px] uppercase tracking-widest font-bold text-pink-pale/20 mb-1">Citation</div>
+                            <div className="text-[11px] text-pink-pale/40 font-mono leading-relaxed">{paper.citation}</div>
+                          </div>
+
+                          <div className="flex flex-wrap gap-2">
+                            {(paper.authors || []).slice(0, 3).map((author, j) => (
+                              <span key={`${paper.link}-auth-${i}-${j}`} className="text-[10px] px-2 py-1 bg-dark-bg rounded-md text-pink-pale/40 font-medium uppercase tracking-wider border border-pink-pale/5">
+                                {author}
+                              </span>
+                            ))}
+                            {(paper.authors || []).length > 3 && (
+                              <span className="text-[10px] px-2 py-1 text-pink-pale/20 font-medium italic">
+                                + {paper.authors.length - 3} more
+                              </span>
+                            )}
                           </div>
                         </div>
-                        <p className="text-sm text-pink-pale/60 line-clamp-3 mb-4 leading-relaxed">{paper.summary}</p>
-                        
-                        <div className="mb-4 p-3 bg-dark-bg rounded-xl">
-                          <div className="text-[9px] uppercase tracking-widest font-bold text-pink-pale/20 mb-1">Citation</div>
-                          <div className="text-[11px] text-pink-pale/40 font-mono leading-relaxed">{paper.citation}</div>
-                        </div>
-
-                        <div className="flex flex-wrap gap-2">
-                          {(paper.authors || []).slice(0, 3).map((author, j) => (
-                            <span key={`${paper.link}-auth-${i}-${j}`} className="text-[10px] px-2 py-1 bg-dark-bg rounded-md text-pink-pale/40 font-medium uppercase tracking-wider">
-                              {author}
-                            </span>
-                          ))}
-                          {(paper.authors || []).length > 3 && (
-                            <span className="text-[10px] px-2 py-1 text-pink-pale/20 font-medium italic">
-                              + {paper.authors.length - 3} more
-                            </span>
-                          )}
-                        </div>
-                      </div>
+                      </motion.div>
                     ))}
                   </div>
                 </motion.section>
