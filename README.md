@@ -1,11 +1,7 @@
 # Literature Agent
 
 A multi-agent research system that fetches arXiv papers, generates hypotheses, runs simulated ML experiments, and produces peer-reviewed reports with RAG-based hallucination prevention.
-<div align="center">
-<img width="1200" height="475" alt="GHBanner" src="https://github.com/user-attachments/assets/0aa67016-6eaf-458a-adb2-6e31a0763ed6" />
-</div>
 
-# Run and deploy your AI Studio app
 
 This contains everything you need to run your app locally.
 
@@ -14,7 +10,7 @@ This contains everything you need to run your app locally.
 - **Robust API Key Management**: Automatic rotation, rate-limit handling, and failover across multiple keys.
 - **Enhanced Visuals**: Animated UI with gradient effects, smooth transitions, and interactive components.
 - **Cross-Platform Ready**: Works on Vercel, Netlify, and other serverless platforms.
-View your app in AI Studio: https://ai.studio/apps/89337c1a-fb72-4f15-8379-86f8f725ea8b
+
 
 ## Run Locally
 
