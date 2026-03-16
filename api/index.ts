@@ -94,14 +94,14 @@ app.post("/api/run-experiment", async (req, res) => {
       });
       rf.train(trainX, trainY);
       const rfPred = rf.predict(testX);
-      const rfCM = new (ConfusionMatrix as any)(testY, rfPred);
+      const rfCM = ConfusionMatrix.fromLabels(testY, rfPred);
       
       results.push({
         name: "Random Forest (Proposed)",
-        accuracy: rfCM.accuracy,
-        f1Score: rfCM.f1(),
-        precision: rfCM.precision(),
-        recall: rfCM.recall()
+        accuracy: rfCM.getAccuracy(),
+        f1Score: rfCM.getF1Score(1),
+        precision: rfCM.getPositivePredictiveValue(1),
+        recall: rfCM.getTruePositiveRate(1)
       });
     } catch (rfErr: any) {
       console.error("[Backend] Random Forest training/eval failed:", rfErr);
@@ -125,15 +125,15 @@ app.post("/api/run-experiment", async (req, res) => {
       
       const testXMatrix = new Matrix(testX);
       const lrPredMatrix = lr.predict(testXMatrix);
-      const lrPred = lrPredMatrix.to1DArray().map((v: number) => v > 0.5 ? 1 : 0);
-      const lrCM = new (ConfusionMatrix as any)(testY, lrPred);
+      const lrPred = lrPredMatrix.map((v: number) => v > 0.5 ? 1 : 0);
+      const lrCM = ConfusionMatrix.fromLabels(testY, lrPred);
       
       results.push({
         name: "Logistic Regression (Baseline)",
-        accuracy: lrCM.accuracy,
-        f1Score: lrCM.f1(),
-        precision: lrCM.precision(),
-        recall: lrCM.recall()
+        accuracy: lrCM.getAccuracy(),
+        f1Score: lrCM.getF1Score(1),
+        precision: lrCM.getPositivePredictiveValue(1),
+        recall: lrCM.getTruePositiveRate(1)
       });
     } catch (lrErr: any) {
       console.error("[Backend] Logistic Regression training/eval failed:", lrErr);

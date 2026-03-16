@@ -66,8 +66,54 @@ export async function embedText(text: string): Promise<number[]> {
   });
 }
 
+function sanitizeJSON(text: string): string {
+  // 1. Remove markdown code blocks
+  let cleaned = text.replace(/```json\n?|```/g, "").trim();
+
+  // 2. Fix common JSON issues from LLMs
+  // LLMs often output single backslashes for LaTeX or paths which break JSON.parse
+  // We want to escape backslashes that are NOT part of a valid JSON escape sequence
+  // Valid JSON escapes: \", \\, \/, \b, \f, \n, \r, \t, \uXXXX
+  
+  let result = "";
+  for (let i = 0; i < cleaned.length; i++) {
+    if (cleaned[i] === "\\") {
+      const next = cleaned[i + 1];
+      if (next === undefined) {
+        result += "\\\\";
+        continue;
+      }
+      
+      // If it's a valid escape, keep it as is
+      if (["\"", "\\", "/", "b", "f", "n", "r", "t"].includes(next)) {
+        result += "\\";
+        result += next;
+        i++;
+      } else if (next === "u") {
+        // Check for \uXXXX
+        const hexPart = cleaned.slice(i + 2, i + 6);
+        if (hexPart.length === 4 && /[0-9a-fA-F]{4}/.test(hexPart)) {
+          result += "\\u";
+          result += hexPart;
+          i += 5;
+        } else {
+          // Invalid unicode escape, escape the backslash
+          result += "\\\\";
+        }
+      } else {
+        // Not a valid JSON escape sequence (e.g. \theta), escape the backslash
+        result += "\\\\";
+      }
+    } else {
+      result += cleaned[i];
+    }
+  }
+  
+  return result;
+}
+
 export async function generateJSON<T>(prompt: string, systemInstruction?: string): Promise<T> {
-  return withRetry(async (ai) => {
+  const text = await withRetry(async (ai) => {
     const response = await ai.models.generateContent({
       model: "gemini-3-flash-preview",
       contents: prompt,
@@ -77,11 +123,18 @@ export async function generateJSON<T>(prompt: string, systemInstruction?: string
       },
     });
     
-    const text = response.text || "{}";
-    // Clean JSON if needed (sometimes model adds markdown blocks)
-    const cleaned = text.replace(/^```json\n?/, "").replace(/\n?```$/, "").trim();
-    return JSON.parse(cleaned) as T;
+    return response.text || "{}";
   });
+
+  const cleaned = sanitizeJSON(text);
+  
+  try {
+    return JSON.parse(cleaned) as T;
+  } catch (e) {
+    console.error("Failed to parse Gemini JSON response:", text);
+    console.error("Cleaned version:", cleaned);
+    throw new Error(`Invalid JSON response from Gemini: ${e instanceof Error ? e.message : String(e)}`);
+  }
 }
 
 export async function generateText(prompt: string, systemInstruction?: string): Promise<string> {

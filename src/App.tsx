@@ -1,5 +1,3 @@
-import { useState, useRef } from 'react';
-import { Search, Lightbulb, FlaskConical, ClipboardCheck, FileText, Loader as Loader2, ChevronRight, CircleAlert as AlertCircle, ExternalLink, CircleCheck as CheckCircle2, BrainCircuit, Copy, Download, Printer, RefreshCw } from 'lucide-react';
 import React, { useState, useEffect, useRef } from 'react';
 import { 
   Search, 
@@ -25,7 +23,20 @@ import Markdown from 'react-markdown';
 // @ts-ignore
 import html2pdf from 'html2pdf.js';
 
-import { AppState } from './types';
+import { 
+  Paper, 
+  Hypothesis, 
+  ExperimentResult, 
+  Critique, 
+  ResearchReport, 
+  AgentStatus, 
+  AppState,
+  Contribution,
+  MathFormalization,
+  ExperimentPlan,
+  DatasetCard,
+  ReviewerCritique
+} from './types';
 import { 
   LiteratureAgent, 
   SelectionAgent,
@@ -873,7 +884,7 @@ ${(state.report.references || []).map(ref => `- ${ref}`).join('\n')}
             <span className="text-[10px] uppercase tracking-widest font-bold">Literature Agent v1.1</span>
           </div>
           <p className="text-[10px] text-pink-pale/40 uppercase tracking-widest font-bold">
-            Research workflow interface
+            Powered by Gemini 3.1 & arXiv API
           </p>
         </div>
       </footer>
