@@ -67,6 +67,20 @@ export const SearchQueryAgent = {
   }
 };
 
+async function fetchWithRetry(url: string, retries = 3, backoff = 1000): Promise<Response> {
+  for (let i = 0; i < retries; i++) {
+    const response = await fetch(url);
+    if (response.status === 429 && i < retries - 1) {
+      const waitTime = backoff * Math.pow(2, i);
+      console.warn(`ArXiv API rate limited (429). Retrying in ${waitTime}ms...`);
+      await new Promise(resolve => setTimeout(resolve, waitTime));
+      continue;
+    }
+    return response;
+  }
+  return fetch(url); // Final attempt
+}
+
 export const LiteratureAgent = {
   async fetchPapers(topic: string): Promise<Paper[]> {
     // First, refine the query
@@ -76,7 +90,7 @@ export const LiteratureAgent = {
     const url = `/api/arxiv?q=${encodeURIComponent(refinedQuery)}`;
     
     try {
-      const response = await fetch(url);
+      const response = await fetchWithRetry(url);
       if (!response.ok) {
         throw new Error(`Proxy responded with status: ${response.status}`);
       }
@@ -94,7 +108,7 @@ export const LiteratureAgent = {
         if (refinedQuery !== topic) {
           console.log("Refined query returned no results, falling back to original topic...");
           const fallbackUrl = `/api/arxiv?q=${encodeURIComponent(topic)}`;
-          const fallbackResponse = await fetch(fallbackUrl);
+          const fallbackResponse = await fetchWithRetry(fallbackUrl);
           if (fallbackResponse.ok) {
             const fallbackXml = await fallbackResponse.text();
             const fallbackJson = parser.parse(fallbackXml);
