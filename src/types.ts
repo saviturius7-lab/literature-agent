@@ -86,10 +86,22 @@ export interface ResearchReport {
   references: string[];
 }
 
+export interface GapIdentification {
+  gaps: {
+    description: string;
+    evidence: string;
+    potentialImpact: string;
+  }[];
+  summary: string;
+}
+
 export type AgentStatus = 
   | 'idle' 
+  | 'refining_topic'
   | 'searching' 
   | 'filtering_relevance'
+  | 'verifying_citations'
+  | 'identifying_gaps'
   | 'hypothesizing' 
   | 'checking_novelty'
   | 'extracting_contributions'
@@ -97,6 +109,7 @@ export type AgentStatus =
   | 'designing_experiment'
   | 'generating_dataset'
   | 'experimenting' 
+  | 'validating_results'
   | 'reviewing'
   | 'revising'
   | 'reporting' 
@@ -108,6 +121,7 @@ export interface AppState {
   status: AgentStatus;
   topic: string;
   papers: Paper[];
+  gapIdentification: GapIdentification | null;
   hypothesis: Hypothesis | null;
   contributions: Contribution[];
   mathFormalization: MathFormalization | null;

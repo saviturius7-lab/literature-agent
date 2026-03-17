@@ -10,7 +10,8 @@ import {
   DatasetCard, 
   ReviewerCritique,
   AblationStudy,
-  FailureCase
+  FailureCase,
+  GapIdentification
 } from "../types";
 import { generateJSON, embedText } from "./gemini";
 
@@ -29,6 +30,23 @@ function cosineSimilarity(a: number[], b: number[]): number {
   mB = Math.sqrt(mB);
   return dotProduct / (mA * mB);
 }
+
+export const TopicRefinementAgent = {
+  async refine(topic: string): Promise<string> {
+    const prompt = `Refine the following research topic into a specific, high-impact research question suitable for a scientific paper.
+    Avoid overly broad topics. Focus on a specific niche in AI/ML.
+    
+    Initial Topic: "${topic}"
+    
+    Return a JSON object:
+    {
+      "refinedTopic": "Specific research question or title"
+    }`;
+    
+    const result = await generateJSON<{ refinedTopic: string }>(prompt, "You are a senior research scientist who specializes in defining high-impact research directions.");
+    return result.refinedTopic || topic;
+  }
+};
 
 export const SearchQueryAgent = {
   async refineQuery(topic: string): Promise<string> {
@@ -135,6 +153,50 @@ export const TopicRelevanceAgent = {
     const result = await generateJSON<{ relevantIndices: number[] }>(prompt, "You are a strict academic reviewer who filters out irrelevant search results.");
     const relevantIndices = result.relevantIndices || [];
     return relevantIndices.map(idx => papers[idx]).filter(p => !!p);
+  }
+};
+
+export const CitationVerificationAgent = {
+  async verify(papers: Paper[], topic: string): Promise<{ verifiedPapers: Paper[]; issues: string[] }> {
+    const prompt = `Verify that the following papers are REAL and RELEVANT to the topic: "${topic}".
+    Check if the titles and summaries make sense and are not hallucinations.
+    
+    Papers:
+    ${papers.map((p, i) => `[${i+1}] Title: ${p.title}\nSummary: ${p.summary.slice(0, 200)}...`).join("\n\n")}
+    
+    Return a JSON object:
+    {
+      "verifiedIndices": [number, number, ...],
+      "issues": ["Issue 1", "Issue 2", ...]
+    }`;
+    
+    const result = await generateJSON<{ verifiedIndices: number[]; issues: string[] }>(prompt, "You are a meticulous academic auditor who detects hallucinations and irrelevant content.");
+    const verifiedIndices = result.verifiedIndices || [];
+    return {
+      verifiedPapers: verifiedIndices.map(idx => papers[idx - 1]).filter(p => !!p),
+      issues: result.issues || []
+    };
+  }
+};
+
+export const GapIdentificationAgent = {
+  async identify(papers: Paper[], topic: string): Promise<GapIdentification> {
+    const prompt = `Analyze the following research papers on "${topic}" and identify 3 critical research gaps.
+    For each gap, provide evidence from the papers (refer to them as [1], [2], etc.) and explain the potential impact of addressing it.
+    
+    Papers:
+    ${papers.map((p, i) => `[${i+1}] ${p.title}: ${p.summary}`).join("\n\n")}
+    
+    Return a JSON object:
+    {
+      "gaps": [
+        { "description": "...", "evidence": "...", "potentialImpact": "..." },
+        ...
+      ],
+      "summary": "Overall summary of the research landscape gaps"
+    }`;
+    
+    return generateJSON<GapIdentification>(prompt, "You are an expert at identifying missing links and future directions in scientific literature.");
   }
 };
 
@@ -355,6 +417,26 @@ export const ExperimentRunner = {
       }
       throw error;
     }
+  }
+};
+
+export const ResultValidationAgent = {
+  async validate(hypothesis: Hypothesis, result: ExperimentResult): Promise<{ isValid: boolean; feedback: string }> {
+    const prompt = `Validate the experimental results against the original hypothesis.
+    
+    Hypothesis: ${hypothesis.description}
+    Results: Accuracy ${result.accuracy.toFixed(2)}, F1 ${result.f1Score.toFixed(2)}
+    Baselines: ${result.baselines.map(b => `${b.name}: ${b.accuracy.toFixed(2)}`).join(", ")}
+    
+    Does the data support the hypothesis? Is the improvement over baselines significant?
+    
+    Return a JSON object:
+    {
+      "isValid": boolean,
+      "feedback": "Detailed validation feedback"
+    }`;
+    
+    return generateJSON<{ isValid: boolean; feedback: string }>(prompt, "You are a skeptical statistician and experimentalist.");
   }
 };
 

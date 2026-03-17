@@ -38,8 +38,11 @@ import {
   ReviewerCritique
 } from './types';
 import { 
+  TopicRefinementAgent,
   LiteratureAgent, 
   SelectionAgent,
+  CitationVerificationAgent,
+  GapIdentificationAgent,
   HypothesisAgent, 
   NoveltyCheckerAgent,
   ContributionAgent,
@@ -47,6 +50,7 @@ import {
   ExperimentDesignAgent,
   DatasetGeneratorAgent,
   ExperimentRunner, 
+  ResultValidationAgent,
   ReviewerSimulatorAgent,
   RevisionAgent,
   ReportAgent,
@@ -63,6 +67,7 @@ export default function App() {
     status: 'idle',
     topic: '',
     papers: [],
+    gapIdentification: null,
     hypothesis: null,
     contributions: [],
     mathFormalization: null,
@@ -88,10 +93,11 @@ export default function App() {
 
     setState(prev => ({ 
       ...prev, 
-      status: 'searching', 
+      status: 'refining_topic', 
       topic: inputTopic,
       error: null,
       papers: [],
+      gapIdentification: null,
       hypothesis: null,
       contributions: [],
       mathFormalization: null,
@@ -104,30 +110,45 @@ export default function App() {
     }));
 
     try {
+      // 1. Topic Selection (Refinement)
+      const refinedTopic = await TopicRefinementAgent.refine(inputTopic);
+      setState(prev => ({ ...prev, topic: refinedTopic }));
+
       while (!isReliable && currentIteration <= MAX_ITERATIONS) {
         setState(prev => ({ ...prev, iteration: currentIteration, status: 'searching' }));
 
-        // 1. Literature Agent
-        const rawPapers = await LiteratureAgent.fetchPapers(inputTopic);
+        // 2. Literature Retrieval (REAL papers only)
+        const rawPapers = await LiteratureAgent.fetchPapers(refinedTopic);
         if (rawPapers.length === 0) {
           throw new Error("No papers found for this topic on arXiv.");
         }
 
-        // 1a. Topic Relevance Agent
+        // 2a. Topic Relevance Agent
         setState(prev => ({ ...prev, status: 'filtering_relevance' }));
-        const relevantPapers = await TopicRelevanceAgent.filterRelevantPapers(inputTopic, rawPapers);
+        const relevantPapers = await TopicRelevanceAgent.filterRelevantPapers(refinedTopic, rawPapers);
         if (relevantPapers.length === 0) {
           throw new Error("No directly relevant papers found for this topic. Please try a more specific or common research topic.");
         }
         
-        // 1b. Selection Agent
-        const papers = await SelectionAgent.selectPapers(inputTopic, relevantPapers);
-        setState(prev => ({ ...prev, status: 'hypothesizing', papers }));
+        // 3. Citation Verification
+        setState(prev => ({ ...prev, status: 'verifying_citations' }));
+        const { verifiedPapers, issues } = await CitationVerificationAgent.verify(relevantPapers, refinedTopic);
+        if (verifiedPapers.length === 0) {
+          throw new Error(`Citation verification failed: ${issues.join(", ")}`);
+        }
 
-        // 2. Hypothesis Agent
-        let hypothesis = await HypothesisAgent.generateHypothesis(inputTopic, papers);
+        // 3b. Selection Agent
+        const papers = await SelectionAgent.selectPapers(refinedTopic, verifiedPapers);
+        setState(prev => ({ ...prev, status: 'identifying_gaps', papers }));
+
+        // 4. Gap Identification
+        const gapIdentification = await GapIdentificationAgent.identify(papers, refinedTopic);
+        setState(prev => ({ ...prev, status: 'hypothesizing', gapIdentification }));
+
+        // 5. Hypothesis Generation
+        let hypothesis = await HypothesisAgent.generateHypothesis(refinedTopic, papers);
         
-        // 2b. Novelty Checker (Loop up to 5 times)
+        // 5b. Novelty Checker (Loop up to 5 times)
         let noveltyAttempts = 0;
         const MAX_NOVELTY_ATTEMPTS = 5;
         let isNovel = false;
@@ -140,7 +161,7 @@ export default function App() {
           
           if (!isNovel) {
             console.log(`Hypothesis not novel enough (Attempt ${noveltyAttempts + 1}), regenerating...`);
-            hypothesis = await HypothesisAgent.generateHypothesis(inputTopic, papers, noveltyFeedback);
+            hypothesis = await HypothesisAgent.generateHypothesis(refinedTopic, papers, noveltyFeedback);
             noveltyAttempts++;
           }
         }
@@ -149,42 +170,46 @@ export default function App() {
           throw new Error(`Failed to generate a sufficiently novel hypothesis after ${MAX_NOVELTY_ATTEMPTS} attempts.`);
         }
 
-        // 2c. Contribution Agent
+        // 5c. Contribution Agent
         setState(prev => ({ ...prev, status: 'extracting_contributions', hypothesis }));
         const contributions = await ContributionAgent.extractContributions(hypothesis);
         setState(prev => ({ ...prev, contributions }));
 
-        // 2d. Math Formalizer
+        // 5d. Math Formalizer
         setState(prev => ({ ...prev, status: 'formalizing_math' }));
         const mathFormalization = await MathFormalizerAgent.formalize(hypothesis);
         setState(prev => ({ ...prev, mathFormalization }));
 
-        // 3. Experiment Design
+        // 6. Experiment Design (constrained)
         setState(prev => ({ ...prev, status: 'designing_experiment' }));
         const experimentPlan = await ExperimentDesignAgent.design(hypothesis, contributions);
         setState(prev => ({ ...prev, experimentPlan }));
 
-        // 3b. Dataset Generator
+        // 6b. Dataset Generator
         setState(prev => ({ ...prev, status: 'generating_dataset' }));
         const datasetCard = await DatasetGeneratorAgent.generate(experimentPlan);
         setState(prev => ({ ...prev, datasetCard }));
 
-        // 3c. Experiment Runner
+        // 7. Execution / simulation with limits
         setState(prev => ({ ...prev, status: 'experimenting' }));
         const experiment = await ExperimentRunner.runExperiment(hypothesis, experimentPlan);
         setState(prev => ({ ...prev, experiment }));
 
-        // 4. Reviewer Simulator
+        // 8. Result Validation
+        setState(prev => ({ ...prev, status: 'validating_results' }));
+        const validationResult = await ResultValidationAgent.validate(hypothesis, experiment);
+        
+        // 8b. Reviewer Simulator
         setState(prev => ({ ...prev, status: 'reviewing' }));
         const reviewerCritiques = await ReviewerSimulatorAgent.simulate(hypothesis, experiment);
         setState(prev => ({ ...prev, reviewerCritiques }));
 
-        // Check reliability (average rating > 7)
+        // Check reliability (average rating > 7 AND result validation passed)
         const avgRating = reviewerCritiques.reduce((acc, c) => acc + c.rating, 0) / reviewerCritiques.length;
-        isReliable = avgRating >= 7;
+        isReliable = avgRating >= 7 && validationResult.isValid;
         
         if (!isReliable && currentIteration < MAX_ITERATIONS) {
-          console.log(`Iteration ${currentIteration} unreliable (Rating: ${avgRating.toFixed(1)}). Revising...`);
+          console.log(`Iteration ${currentIteration} unreliable (Rating: ${avgRating.toFixed(1)}, Valid: ${validationResult.isValid}). Revising...`);
           
           // Update hypothesis and experiment with revised versions
           setState(prev => ({ ...prev, status: 'revising' }));
@@ -207,9 +232,9 @@ export default function App() {
 
         setState(prev => ({ ...prev, status: 'reporting' }));
 
-        // 5. Report Agent
+        // 9. Writing (last step)
         const report = await ReportAgent.generateReport(
-          inputTopic, 
+          refinedTopic, 
           papers, 
           hypothesis, 
           contributions,
@@ -312,19 +337,22 @@ ${(state.report.references || []).map(ref => `- ${ref}`).join('\n')}
   };
 
   const steps = [
-    { id: 'searching', label: 'Literature Search', icon: Search },
-    { id: 'hypothesizing', label: 'Hypothesis & Novelty', icon: Lightbulb },
-    { id: 'formalizing_math', label: 'Math & Design', icon: BrainCircuit },
-    { id: 'experimenting', label: 'ML Execution', icon: FlaskConical },
-    { id: 'reviewing', label: 'Peer Review', icon: ClipboardCheck },
-    { id: 'reporting', label: 'Final Report', icon: FileText },
+    { id: 'refining_topic', label: 'Topic Selection', icon: Search },
+    { id: 'searching', label: 'Literature Retrieval', icon: Search },
+    { id: 'verifying_citations', label: 'Citation Verification', icon: ClipboardCheck },
+    { id: 'identifying_gaps', label: 'Gap Identification', icon: Lightbulb },
+    { id: 'hypothesizing', label: 'Hypothesis Generation', icon: Lightbulb },
+    { id: 'designing_experiment', label: 'Experiment Design', icon: BrainCircuit },
+    { id: 'experimenting', label: 'Execution', icon: FlaskConical },
+    { id: 'validating_results', label: 'Result Validation', icon: ClipboardCheck },
+    { id: 'reporting', label: 'Writing', icon: FileText },
   ];
 
   const currentStepIndex = steps.findIndex(s => {
     if (state.status === 'filtering_relevance') return s.id === 'searching';
     if (state.status === 'checking_novelty' || state.status === 'extracting_contributions') return s.id === 'hypothesizing';
-    if (state.status === 'designing_experiment' || state.status === 'generating_dataset') return s.id === 'formalizing_math';
-    if (state.status === 'revising') return s.id === 'reviewing';
+    if (state.status === 'formalizing_math' || state.status === 'generating_dataset') return s.id === 'designing_experiment';
+    if (state.status === 'reviewing' || state.status === 'revising') return s.id === 'validating_results';
     if (state.status === 'verifying_report') return s.id === 'reporting';
     return s.id === state.status;
   });
@@ -440,8 +468,8 @@ ${(state.report.references || []).map(ref => `- ${ref}`).join('\n')}
                           The app is automatically rotating through your keys, but you may need to:
                         </p>
                         <ul className="text-[10px] text-pink-pale/40 mt-2 list-disc list-inside space-y-1">
-                          <li>Ensure <strong>GEMINI_API_KEYS</strong> are valid and not expired.</li>
-                          <li>Add more keys to your rotation (up to 20) to bypass rate limits.</li>
+                          <li>Ensure <strong>VITE_GEMINI_API_KEY_1</strong> (up to 32) are valid.</li>
+                          <li>Add more keys to your rotation (up to 32) to bypass rate limits.</li>
                           <li>Check if your keys have hit their daily free-tier quota.</li>
                         </ul>
                       </div>
@@ -531,7 +559,15 @@ ${(state.report.references || []).map(ref => `- ${ref}`).join('\n')}
                   className="space-y-6"
                 >
                   <div className="flex items-center justify-between">
-                    <h2 className="text-2xl font-serif italic">Literature Review</h2>
+                    <div className="flex items-center gap-4">
+                      <h2 className="text-2xl font-serif italic">Literature Review</h2>
+                      {state.status !== 'searching' && state.status !== 'filtering_relevance' && (
+                        <div className="flex items-center gap-1.5 px-2 py-0.5 bg-emerald-500/10 border border-emerald-500/20 rounded text-[9px] font-bold text-emerald-400 uppercase tracking-widest">
+                          <ClipboardCheck className="w-3 h-3" />
+                          Citations Verified
+                        </div>
+                      )}
+                    </div>
                     <span className="text-[10px] font-bold uppercase tracking-widest text-pink-pale/40">LiteratureAgent</span>
                   </div>
                   <div className="space-y-4">
@@ -575,6 +611,46 @@ ${(state.report.references || []).map(ref => `- ${ref}`).join('\n')}
                         </div>
                       </div>
                     ))}
+                  </div>
+                </motion.section>
+              )}
+
+              {/* Gap Identification */}
+              {state.gapIdentification && (
+                <motion.section 
+                  key="gap-section"
+                  initial={{ opacity: 0, y: 20 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  className="space-y-6 pt-12 border-t border-pink-pale/10"
+                >
+                  <div className="flex items-center justify-between">
+                    <h2 className="text-2xl font-serif italic">Research Gap Analysis</h2>
+                    <span className="text-[10px] font-bold uppercase tracking-widest text-pink-pale/40">GapIdentificationAgent</span>
+                  </div>
+                  <div className="bg-dark-surface border border-pink-pale/10 p-8 rounded-3xl">
+                    <p className="text-sm text-pink-pale/60 italic mb-8 leading-relaxed">
+                      {state.gapIdentification.summary}
+                    </p>
+                    <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+                      {(state.gapIdentification.gaps || []).map((gap, i) => (
+                        <div key={`gap-${i}`} className="p-6 bg-dark-bg rounded-2xl border border-pink-pale/5 hover:border-pink-deep/20 transition-all">
+                          <div className="w-8 h-8 bg-pink-deep/10 rounded-lg flex items-center justify-center mb-4">
+                            <span className="text-pink-deep font-bold text-xs">{i+1}</span>
+                          </div>
+                          <h4 className="text-xs font-bold text-pink-pale mb-2 leading-tight">{gap.description}</h4>
+                          <div className="space-y-3">
+                            <div>
+                              <div className="text-[9px] uppercase tracking-widest font-bold text-pink-deep/40 mb-1">Evidence</div>
+                              <p className="text-[10px] text-pink-pale/40 italic">{gap.evidence}</p>
+                            </div>
+                            <div>
+                              <div className="text-[9px] uppercase tracking-widest font-bold text-pink-deep/40 mb-1">Potential Impact</div>
+                              <p className="text-[10px] text-pink-pale/60">{gap.potentialImpact}</p>
+                            </div>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
                   </div>
                 </motion.section>
               )}

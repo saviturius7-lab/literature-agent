@@ -2,16 +2,40 @@ import { GoogleGenAI } from "@google/genai";
 
 // Helper to collect keys from import.meta.env
 function collectKeys(): string[] {
-  const keys = (import.meta as any).env.VITE_GEMINI_KEYS;
-  if (Array.isArray(keys)) return keys;
-  if (typeof keys === 'string') {
-    try {
-      return JSON.parse(keys);
-    } catch (e) {
-      return [];
+  const collected: string[] = [];
+  
+  // 1. Check for individual keys VITE_GEMINI_API_KEY_1 to VITE_GEMINI_API_KEY_32
+  for (let i = 1; i <= 32; i++) {
+    const key = (import.meta as any).env[`VITE_GEMINI_API_KEY_${i}`];
+    if (key && key.trim()) {
+      collected.push(key.trim());
     }
   }
-  return [];
+
+  // 2. Check for the bulk VITE_GEMINI_KEYS (JSON array or comma-separated)
+  const bulkKeys = (import.meta as any).env.VITE_GEMINI_KEYS;
+  if (bulkKeys) {
+    if (Array.isArray(bulkKeys)) {
+      collected.push(...bulkKeys.filter(k => typeof k === 'string' && k.trim()));
+    } else if (typeof bulkKeys === 'string') {
+      try {
+        // Try JSON parse first
+        const parsed = JSON.parse(bulkKeys);
+        if (Array.isArray(parsed)) {
+          collected.push(...parsed.filter(k => typeof k === 'string' && k.trim()));
+        } else {
+          collected.push(bulkKeys.trim());
+        }
+      } catch (e) {
+        // Fallback to comma-separated
+        const split = bulkKeys.split(',').map(k => k.trim()).filter(k => k);
+        collected.push(...split);
+      }
+    }
+  }
+
+  // Remove duplicates
+  return Array.from(new Set(collected));
 }
 
 const allGeminiKeys = collectKeys();
