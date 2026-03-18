@@ -136,10 +136,10 @@ function sanitizeJSON(text: string): string {
   return result;
 }
 
-export async function generateJSON<T>(prompt: string, systemInstruction?: string): Promise<T> {
+export async function generateJSON<T>(prompt: string, systemInstruction?: string, model: string = "gemini-3-flash-preview"): Promise<T> {
   const text = await withRetry(async (ai) => {
     const response = await ai.models.generateContent({
-      model: "gemini-3-flash-preview",
+      model,
       contents: prompt,
       config: { 
         systemInstruction,

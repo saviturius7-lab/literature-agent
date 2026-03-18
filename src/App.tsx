@@ -55,7 +55,8 @@ import {
   RevisionAgent,
   ReportAgent,
   TopicRelevanceAgent,
-  VerificationAgent
+  VerificationAgent,
+  FactualityEvalAgent
 } from './services/agents';
 
 function cn(...inputs: ClassValue[]) {
@@ -76,6 +77,7 @@ export default function App() {
     experiment: null,
     reviewerCritiques: [],
     report: null,
+    factualityResult: null,
     error: null,
     iteration: 0,
   });
@@ -120,28 +122,33 @@ export default function App() {
         // 2. Literature Retrieval (REAL papers only)
         const rawPapers = await LiteratureAgent.fetchPapers(refinedTopic);
         if (rawPapers.length === 0) {
-          throw new Error("No papers found for this topic on arXiv.");
+          throw new Error(`No papers found for "${refinedTopic}" on arXiv. This can happen if the topic is too niche or the search query is too specific. Try a broader research topic.`);
         }
 
         // 2a. Topic Relevance Agent
         setState(prev => ({ ...prev, status: 'filtering_relevance' }));
         const relevantPapers = await TopicRelevanceAgent.filterRelevantPapers(refinedTopic, rawPapers);
         if (relevantPapers.length === 0) {
-          throw new Error("No directly relevant papers found for this topic. Please try a more specific or common research topic.");
+          throw new Error(`The papers found on arXiv were not directly relevant to "${refinedTopic}". Try refining your topic or using more standard academic terminology.`);
         }
         
         // 3. Citation Verification
         setState(prev => ({ ...prev, status: 'verifying_citations' }));
         const { verifiedPapers, issues } = await CitationVerificationAgent.verify(relevantPapers, refinedTopic);
-        if (verifiedPapers.length === 0) {
-          throw new Error(`Citation verification failed: ${issues.join(", ")}`);
+        
+        // We keep all papers in the state for visibility, but only use verified ones for the pipeline
+        const trulyVerified = verifiedPapers.filter(p => p.verified !== false);
+        if (trulyVerified.length === 0) {
+          throw new Error(`Citation verification failed: No papers could be verified in real-world databases. Issues: ${issues.join(", ")}`);
         }
 
         // 3b. Selection Agent
-        const papers = await SelectionAgent.selectPapers(refinedTopic, verifiedPapers);
-        setState(prev => ({ ...prev, status: 'identifying_gaps', papers }));
+        const papers = await SelectionAgent.selectPapers(refinedTopic, trulyVerified);
+        // We set the state to all verifiedPapers (including flagged ones) for the UI
+        setState(prev => ({ ...prev, status: 'identifying_gaps', papers: verifiedPapers }));
 
         // 4. Gap Identification
+        // But we only use the selected (verified) papers for the next steps
         const gapIdentification = await GapIdentificationAgent.identify(papers, refinedTopic);
         setState(prev => ({ ...prev, status: 'hypothesizing', gapIdentification }));
 
@@ -249,18 +256,25 @@ export default function App() {
         setState(prev => ({ ...prev, status: 'verifying_report', report }));
         const verification = await VerificationAgent.verifyReport(report, papers);
         
-        if (!verification.isValid) {
-          console.warn("Report verification failed:", verification.issues);
-          // If it's the first or second iteration, we might want to retry reporting with a stronger prompt
-          // but for now we'll just log it and proceed, or we could throw an error to force a full iteration retry
+        // 7. Factuality Evaluation (Judge LLM)
+        const factualityResult = await FactualityEvalAgent.evaluate(report, papers);
+        
+        if (!verification.isValid || !factualityResult.isPassed) {
+          console.warn("Report verification or factuality evaluation failed:", verification.issues, factualityResult.unsupportedClaims);
+          
           if (currentIteration < MAX_ITERATIONS) {
-             console.log("Retrying iteration due to verification failure...");
+             console.log("Retrying iteration due to verification/factuality failure...");
              currentIteration++;
              continue;
           }
         }
 
-        setState(prev => ({ ...prev, status: 'completed', report }));
+        setState(prev => ({ 
+          ...prev, 
+          status: 'completed', 
+          report,
+          factualityResult
+        }));
         break;
       }
 
@@ -573,6 +587,17 @@ ${(state.report.references || []).map(ref => `- ${ref}`).join('\n')}
                   <div className="space-y-4">
                     {(state.papers || []).map((paper, i) => (
                       <div key={`${paper.link}-${i}`} className="group p-6 bg-dark-surface border border-pink-pale/10 rounded-2xl hover:border-pink-deep/30 transition-all">
+                        {paper.verified === false ? (
+                          <div className="flex items-center gap-1 text-[9px] font-bold text-amber-500 uppercase tracking-widest mb-2">
+                            <AlertCircle className="w-3 h-3" />
+                            Unverified Citation
+                          </div>
+                        ) : paper.verified === true ? (
+                          <div className="flex items-center gap-1 text-[9px] font-bold text-emerald-500 uppercase tracking-widest mb-2">
+                            <CheckCircle2 className="w-3 h-3" />
+                            Verified Citation
+                          </div>
+                        ) : null}
                         <div className="flex justify-between items-start gap-4 mb-3">
                           <h3 className="font-semibold text-lg leading-tight group-hover:text-pink-deep transition-colors">
                             {paper.title}
@@ -868,9 +893,37 @@ ${(state.report.references || []).map(ref => `- ${ref}`).join('\n')}
                   className="space-y-8 pt-12 border-t border-[#1A1A1A]/10"
                 >
                   <div className="flex items-center justify-between">
-                    <h2 className="text-3xl font-serif italic">Research Report</h2>
+                    <div className="flex items-center gap-4">
+                      <h2 className="text-3xl font-serif italic">Research Report</h2>
+                      {state.factualityResult && (
+                        <div className={cn(
+                          "px-3 py-1 rounded-full text-[10px] font-bold border flex items-center gap-2",
+                          state.factualityResult.isPassed ? "bg-emerald-900/30 text-emerald-400 border-emerald-500/20" : "bg-pink-900/30 text-pink-400 border-pink-500/20"
+                        )}>
+                          <ClipboardCheck className="w-3 h-3" />
+                          Factuality Score: {(state.factualityResult.faithfulnessScore * 100).toFixed(0)}%
+                        </div>
+                      )}
+                    </div>
                     <span className="text-[10px] font-bold uppercase tracking-widest text-[#1A1A1A]/40">ReportAgent</span>
                   </div>
+                  
+                  {state.factualityResult && !state.factualityResult.isPassed && (
+                    <div className="p-4 bg-pink-900/20 border border-pink-500/20 rounded-2xl flex gap-4 items-start">
+                      <AlertCircle className="w-5 h-5 text-pink-400 shrink-0 mt-0.5" />
+                      <div className="space-y-2">
+                        <h4 className="text-sm font-bold text-pink-400">Factuality Warning</h4>
+                        <p className="text-xs text-pink-pale/60">The Judge LLM identified {state.factualityResult.unsupportedClaims.length} potentially unsupported claims in this report. Please review with caution.</p>
+                        <ul className="space-y-1">
+                          {state.factualityResult.unsupportedClaims.map((claim, i) => (
+                            <li key={`unsupported-${i}`} className="text-[10px] text-pink-pale/40 italic">
+                              • "{claim.claim}" — <span className="text-pink-deep/60">{claim.reason}</span>
+                            </li>
+                          ))}
+                        </ul>
+                      </div>
+                    </div>
+                  )}
                   
                   <div ref={reportRef} className="prose prose-sm max-w-none space-y-8 bg-dark-surface p-8 rounded-3xl border border-pink-pale/10">
                     <div className="text-center mb-12">

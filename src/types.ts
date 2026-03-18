@@ -1,3 +1,14 @@
+export interface Chunk {
+  text: string;
+  section: string;
+  source: string;
+  metadata: {
+    index: number;
+    total: number;
+    overlap: boolean;
+  };
+}
+
 export interface Paper {
   title: string;
   summary: string;
@@ -5,6 +16,8 @@ export interface Paper {
   published: string;
   link: string;
   citation: string;
+  verified?: boolean;
+  chunks?: Chunk[];
 }
 
 export interface Hypothesis {
@@ -76,6 +89,14 @@ export interface Critique {
   isReliable: boolean;
 }
 
+export interface FactualityResult {
+  faithfulnessScore: number;
+  totalClaims: number;
+  supportedClaims: number;
+  unsupportedClaims: { claim: string; reason: string }[];
+  isPassed: boolean;
+}
+
 export interface ResearchReport {
   abstract: string;
   introduction: string;
@@ -130,6 +151,7 @@ export interface AppState {
   experiment: ExperimentResult | null;
   reviewerCritiques: ReviewerCritique[];
   report: ResearchReport | null;
+  factualityResult: FactualityResult | null;
   error: string | null;
   iteration: number;
 }
