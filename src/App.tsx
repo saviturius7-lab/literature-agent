@@ -522,9 +522,10 @@ ${(state.report.references || []).map(ref => `- ${ref}`).join('\n')}
                           The app is automatically rotating through your keys, but you may need to:
                         </p>
                         <ul className="text-[10px] text-pink-pale/40 mt-2 list-disc list-inside space-y-1">
-                          <li>Ensure <strong>VITE_GEMINI_API_KEY_1</strong> (up to 32) are valid.</li>
-                          <li>Add more keys to your rotation (up to 32) to bypass rate limits.</li>
-                          <li>Check if your keys have hit their daily free-tier quota.</li>
+                          <li>Ensure <strong>VITE_GEMINI_API_KEY_1</strong> (up to 32) are valid and have billing enabled if using paid tiers.</li>
+                          <li>Add more keys to your rotation (up to 32) to bypass free-tier rate limits.</li>
+                          <li>If using the free tier, the "Pro" model used for factuality evaluation is limited to 2 requests per minute.</li>
+                          <li>Wait a few minutes for your quota to reset.</li>
                         </ul>
                       </div>
                     )}

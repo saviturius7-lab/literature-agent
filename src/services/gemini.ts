@@ -44,15 +44,39 @@ let currentKeyIndex = 0;
 // Track failed keys to avoid them in the same session
 const failedKeys = new Set<string>();
 
-async function withRetry<T>(fn: (ai: GoogleGenAI) => Promise<T>, retries = 15): Promise<T> {
-  const keys = allGeminiKeys.filter(k => !failedKeys.has(k));
-  const availableKeys = keys.length > 0 ? keys : allGeminiKeys; // Fallback to all if all "failed"
-  
+// Track rate-limited keys and when they can be used again
+const keyCooldowns = new Map<string, number>();
+
+async function withRetry<T>(fn: (ai: GoogleGenAI) => Promise<T>, retries = 30): Promise<T> {
   let lastError: any;
   
   for (let i = 0; i < retries; i++) {
-    const apiKey = availableKeys[currentKeyIndex % availableKeys.length];
-    currentKeyIndex++;
+    const now = Date.now();
+    const availableKeys = allGeminiKeys.filter(k => {
+      if (failedKeys.has(k)) return false;
+      const cooldownUntil = keyCooldowns.get(k) || 0;
+      return now >= cooldownUntil;
+    });
+
+    // If no keys are available (all cooling down or failed), use the one with the shortest cooldown
+    let apiKey: string;
+    if (availableKeys.length === 0) {
+      const sortedKeys = allGeminiKeys
+        .filter(k => !failedKeys.has(k))
+        .sort((a, b) => (keyCooldowns.get(a) || 0) - (keyCooldowns.get(b) || 0));
+      
+      apiKey = sortedKeys[0] || allGeminiKeys[0];
+      
+      // If even the best key is still cooling down, wait a bit
+      const waitTime = Math.max(0, (keyCooldowns.get(apiKey) || 0) - now);
+      if (waitTime > 0) {
+        console.log(`All keys cooling down. Waiting ${waitTime}ms for best key...`);
+        await new Promise(resolve => setTimeout(resolve, waitTime));
+      }
+    } else {
+      apiKey = availableKeys[currentKeyIndex % availableKeys.length];
+      currentKeyIndex++;
+    }
     
     const ai = new GoogleGenAI({ apiKey });
     
@@ -60,18 +84,36 @@ async function withRetry<T>(fn: (ai: GoogleGenAI) => Promise<T>, retries = 15): 
       return await fn(ai);
     } catch (error: any) {
       lastError = error;
-      const message = error.message || "";
-      const status = error.status || 0;
+      let message = error.message || "";
+      let status = error.status || 0;
       
-      const isRateLimit = message.includes("429") || status === 429 || message.includes("RESOURCE_EXHAUSTED");
+      // If message is a JSON string, try to parse it to get status
+      if (message.startsWith("{") && message.endsWith("}")) {
+        try {
+          const parsed = JSON.parse(message);
+          if (parsed.error && parsed.error.code) {
+            status = parsed.error.code;
+            message = parsed.error.message || message;
+          }
+        } catch (e) { /* ignore */ }
+      }
+      
+      const isRateLimit = message.includes("429") || status === 429 || message.includes("RESOURCE_EXHAUSTED") || message.toLowerCase().includes("quota");
       const isAuthError = message.includes("401") || status === 401 || message.includes("API_KEY_INVALID");
       
       if (isAuthError) {
         failedKeys.add(apiKey);
       }
       
+      if (isRateLimit) {
+        // Set a cooldown for this key (e.g., 5 seconds for free tier)
+        keyCooldowns.set(apiKey, Date.now() + 5000);
+      }
+      
       if (i < retries - 1 && (isRateLimit || isAuthError)) {
-        console.warn(`Gemini API error (${isRateLimit ? "Rate limit" : "Auth error"}), retrying with next key...`);
+        const backoff = Math.min(15000, 1000 * Math.pow(1.5, i)); // Exponential backoff up to 15s
+        console.warn(`Gemini API error (${isRateLimit ? "Rate limit" : "Auth error"}). Retrying in ${Math.round(backoff)}ms...`);
+        await new Promise(resolve => setTimeout(resolve, backoff));
         continue;
       }
       throw error;
