@@ -16,6 +16,7 @@ import {
   FactualityResult
 } from "../types";
 import { generateJSON, embedText } from "./gemini";
+import { vectorStore } from "./vectorStore";
 
 const parser = new XMLParser();
 
@@ -122,33 +123,48 @@ async function fetchWithRetry(url: string, retries = 3, backoff = 1000): Promise
 
 export const LiteratureAgent = {
   async fetchPapers(topic: string): Promise<Paper[]> {
+    const allPapers: Paper[] = [];
+    const seenTitles = new Set<string>();
+
+    const addPapers = (papers: Paper[]) => {
+      for (const p of papers) {
+        const normalizedTitle = p.title.toLowerCase().trim();
+        if (!seenTitles.has(normalizedTitle)) {
+          allPapers.push(p);
+          seenTitles.add(normalizedTitle);
+        }
+      }
+    };
+
     // Strategy 1: Refined Query
     const refinedQuery = await SearchQueryAgent.refineQuery(topic);
     console.log(`Search Strategy 1 (Refined): "${refinedQuery}"`);
-    let papers = await this.executeSearch(refinedQuery);
-    if (papers.length > 0) return papers;
+    addPapers(await this.executeSearch(refinedQuery));
 
     // Strategy 2: Original Topic
-    if (refinedQuery !== topic) {
+    if (allPapers.length < 5 && refinedQuery !== topic) {
       console.log(`Search Strategy 2 (Original): "${topic}"`);
-      papers = await this.executeSearch(topic);
-      if (papers.length > 0) return papers;
+      addPapers(await this.executeSearch(topic));
     }
 
     // Strategy 3: Broad Keywords
-    console.log("Search Strategy 3 (Broad Keywords)");
-    const keywords = await SearchQueryAgent.getBroadKeywords(topic);
-    for (const keyword of keywords) {
-      console.log(`Trying keyword: "${keyword}"`);
-      papers = await this.executeSearch(keyword);
-      if (papers.length > 0) return papers;
+    if (allPapers.length < 5) {
+      console.log("Search Strategy 3 (Broad Keywords)");
+      const keywords = await SearchQueryAgent.getBroadKeywords(topic);
+      for (const keyword of keywords) {
+        if (allPapers.length >= 10) break;
+        console.log(`Trying keyword: "${keyword}"`);
+        addPapers(await this.executeSearch(keyword));
+      }
     }
 
     // Strategy 4: Very Broad Fallback (AI/ML general)
-    console.log("Search Strategy 4 (Very Broad Fallback)");
-    papers = await this.executeSearch("artificial intelligence machine learning");
+    if (allPapers.length === 0) {
+      console.log("Search Strategy 4 (Very Broad Fallback)");
+      addPapers(await this.executeSearch("artificial intelligence machine learning"));
+    }
     
-    return papers;
+    return allPapers;
   },
 
   async executeSearch(query: string): Promise<Paper[]> {
@@ -200,6 +216,7 @@ export const LiteratureAgent = {
 
 export const ChunkingAgent = {
   chunkPaper(title: string, text: string): Chunk[] {
+    const safeText = text || "No summary available.";
     // Recursive character splitting logic
     // We split by logical markers: Paragraphs, then Sentences
     const separators = ["\n\n", "\n", ". ", "! ", "? "];
@@ -209,6 +226,7 @@ export const ChunkingAgent = {
     let chunks: string[] = [];
     
     const splitRecursively = (input: string, sepIdx: number): string[] => {
+      if (!input) return [];
       if (input.length <= targetSize) return [input];
       if (sepIdx >= separators.length) {
         // Fallback to character-based split if no separators left
@@ -243,7 +261,7 @@ export const ChunkingAgent = {
       return currentChunks;
     };
 
-    const rawChunks = splitRecursively(text, 0);
+    const rawChunks = splitRecursively(safeText, 0);
     
     // Add metadata and logical sectioning
     return rawChunks.map((chunkText, i) => {
@@ -289,25 +307,58 @@ export const TopicRelevanceAgent = {
 };
 
 export const CitationVerificationAgent = {
-  async verifyWithOpenAlex(title: string): Promise<boolean> {
+  async verifyWithOpenAlex(title: string, authors: string[] = []): Promise<boolean> {
     try {
-      // Clean title for search
-      const cleanTitle = title.replace(/[^\w\s]/gi, '').slice(0, 100);
-      const url = `https://api.openalex.org/works?filter=title.search:${encodeURIComponent(cleanTitle)}&mailto=saviturius7@gmail.com`;
+      // Clean title for search: remove punctuation, lowercase, and take first 100 chars
+      const cleanTitle = title.replace(/[^\w\s]/gi, '').toLowerCase().trim();
       
-      const response = await fetch(url);
+      // Strategy 1: Title Search
+      const titleUrl = `https://api.openalex.org/works?filter=title.search:${encodeURIComponent(cleanTitle.slice(0, 100))}&mailto=saviturius7@gmail.com`;
+      
+      const response = await fetch(titleUrl);
       if (!response.ok) return false;
       
       const data = await response.json();
-      // Check if any result matches the title closely (fuzzy match)
+      
       if (data.results && data.results.length > 0) {
-        const topResult = data.results[0];
-        const resultTitle = topResult.display_name.toLowerCase();
-        const searchTitle = title.toLowerCase();
-        
-        // Simple inclusion check or similarity
-        return resultTitle.includes(searchTitle) || searchTitle.includes(resultTitle);
+        // Check top 3 results for a match
+        for (const result of data.results.slice(0, 3)) {
+          const resultTitle = result.display_name.toLowerCase().replace(/[^\w\s]/gi, '').trim();
+          
+          // Fuzzy match: check if one contains the other or high overlap
+          if (resultTitle.includes(cleanTitle) || cleanTitle.includes(resultTitle)) {
+            return true;
+          }
+          
+          // Substring match for long titles
+          if (cleanTitle.length > 30 && resultTitle.length > 30) {
+            const startOfSearch = cleanTitle.slice(0, 30);
+            const startOfResult = resultTitle.slice(0, 30);
+            if (startOfResult.includes(startOfSearch) || startOfSearch.includes(startOfResult)) {
+              return true;
+            }
+          }
+        }
       }
+      
+      // Strategy 2: Author + Year (if title search failed)
+      if (authors.length > 0) {
+        const firstAuthor = authors[0].split(' ').pop() || "";
+        if (firstAuthor) {
+          const authorUrl = `https://api.openalex.org/works?filter=author.search:${encodeURIComponent(firstAuthor)}&mailto=saviturius7@gmail.com`;
+          const authResponse = await fetch(authorUrl);
+          if (authResponse.ok) {
+            const authData = await authResponse.json();
+            for (const result of authData.results || []) {
+              const resultTitle = result.display_name.toLowerCase().replace(/[^\w\s]/gi, '').trim();
+              if (resultTitle.includes(cleanTitle.slice(0, 20)) || cleanTitle.includes(resultTitle.slice(0, 20))) {
+                return true;
+              }
+            }
+          }
+        }
+      }
+
       return false;
     } catch (e) {
       console.error("OpenAlex verification error:", e);
@@ -339,11 +390,19 @@ export const CitationVerificationAgent = {
     const verificationResults = await Promise.all(
       papers.map(async (paper, i) => {
         const llmVerified = verifiedIndices.has(i + 1);
-        const realWorldVerified = await this.verifyWithOpenAlex(paper.title);
+        const realWorldVerified = await this.verifyWithOpenAlex(paper.title, paper.authors);
+        
+        // If it's from arXiv (has a link), we give it more benefit of the doubt
+        const isArxiv = paper.link && paper.link.includes('arxiv.org');
+        
+        // Final verification logic: 
+        // - If real-world verified, it's definitely verified.
+        // - If it's from arXiv AND LLM verified, we consider it verified even if OpenAlex is missing it (OpenAlex can be slow to index).
+        const verified = realWorldVerified || (isArxiv && llmVerified);
         
         return { 
           ...paper, 
-          verified: llmVerified && realWorldVerified 
+          verified 
         };
       })
     );
@@ -412,6 +471,10 @@ export const SelectionAgent = {
 
 export const HypothesisAgent = {
   async generateHypothesis(topic: string, papers: Paper[], feedback?: string): Promise<Hypothesis> {
+    // RAG: Retrieve relevant chunks from vector store
+    const relevantChunks = await vectorStore.search(topic, 10);
+    const ragContext = relevantChunks.map(c => `[Source: ${c.metadata.source}] ${c.text}`).join("\n\n");
+
     const papersContext = papers.map((p, i) => {
       const chunksInfo = p.chunks 
         ? p.chunks.map(c => `[Section: ${c.section}] ${c.text}`).join("\n")
@@ -420,9 +483,12 @@ export const HypothesisAgent = {
     }).join("\n\n");
 
     // Step 1: Generate initial response
-    const initialPrompt = `Based STRICTLY on the following research papers about "${topic}", propose a novel research hypothesis.
+    const initialPrompt = `Based STRICTLY on the following research papers and retrieved context about "${topic}", propose a novel research hypothesis.
     Do NOT invent information that is not supported by or extrapolated from these specific papers.
     
+    Retrieved Context (RAG):
+    ${ragContext}
+
     Papers:
     ${papersContext}
     
@@ -752,6 +818,10 @@ export const ReportAgent = {
     result: ExperimentResult,
     critiques: ReviewerCritique[]
   ): Promise<ResearchReport> {
+    // RAG: Retrieve relevant chunks for the report
+    const relevantChunks = await vectorStore.search(`${topic} ${hypothesis.description}`, 15);
+    const ragContext = relevantChunks.map(c => `[Source: ${c.metadata.source}] ${c.text}`).join("\n\n");
+
     const papersContext = papers.map((p, i) => {
       const chunksInfo = p.chunks 
         ? p.chunks.map(c => `[Section: ${c.section}] ${c.text}`).join("\n")
@@ -766,11 +836,14 @@ export const ReportAgent = {
     1. ONLY use the provided papers and their specific sections for citations. Do NOT invent any papers or citations.
     2. Every in-text citation like [1], [2] MUST correspond to the paper list provided below.
     3. Ensure the methodology and discussion are deeply grounded in the provided literature, referencing specific sections where appropriate.
-    4. If a claim is made, it should ideally be supported by one of the provided papers.
+    4. If a claim is made, it should ideally be supported by one of the provided papers or the retrieved context.
     
     Topic: ${topic}
     Hypothesis: ${hypothesis.title}
     
+    Retrieved Context (RAG):
+    ${ragContext}
+
     Provided Literature (Grounded Context):
     ${papersContext}
     

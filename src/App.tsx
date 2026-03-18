@@ -23,6 +23,7 @@ import Markdown from 'react-markdown';
 // @ts-ignore
 import html2pdf from 'html2pdf.js';
 
+import { vectorStore } from './services/vectorStore';
 import { 
   Paper, 
   Hypothesis, 
@@ -35,10 +36,12 @@ import {
   MathFormalization,
   ExperimentPlan,
   DatasetCard,
-  ReviewerCritique
+  ReviewerCritique,
+  Chunk
 } from './types';
 import { 
   TopicRefinementAgent,
+  SearchQueryAgent,
   LiteratureAgent, 
   SelectionAgent,
   CitationVerificationAgent,
@@ -112,6 +115,9 @@ export default function App() {
     }));
 
     try {
+      // Clear vector store for new research
+      vectorStore.clear();
+
       // 1. Topic Selection (Refinement)
       const refinedTopic = await TopicRefinementAgent.refine(inputTopic);
       setState(prev => ({ ...prev, topic: refinedTopic }));
@@ -120,26 +126,60 @@ export default function App() {
         setState(prev => ({ ...prev, iteration: currentIteration, status: 'searching' }));
 
         // 2. Literature Retrieval (REAL papers only)
-        const rawPapers = await LiteratureAgent.fetchPapers(refinedTopic);
+        let rawPapers = await LiteratureAgent.fetchPapers(refinedTopic);
+        
+        // If no papers found, try a broader search immediately
         if (rawPapers.length === 0) {
-          throw new Error(`No papers found for "${refinedTopic}" on arXiv. This can happen if the topic is too niche or the search query is too specific. Try a broader research topic.`);
+          console.log("No papers found with refined topic, trying original input...");
+          rawPapers = await LiteratureAgent.fetchPapers(inputTopic);
+        }
+
+        if (rawPapers.length === 0) {
+          throw new Error(`No papers found for "${refinedTopic}" or "${inputTopic}" on arXiv. This can happen if the topic is too niche or the search query is too specific. Try a broader research topic.`);
         }
 
         // 2a. Topic Relevance Agent
         setState(prev => ({ ...prev, status: 'filtering_relevance' }));
         const relevantPapers = await TopicRelevanceAgent.filterRelevantPapers(refinedTopic, rawPapers);
-        if (relevantPapers.length === 0) {
-          throw new Error(`The papers found on arXiv were not directly relevant to "${refinedTopic}". Try refining your topic or using more standard academic terminology.`);
-        }
         
         // 3. Citation Verification
         setState(prev => ({ ...prev, status: 'verifying_citations' }));
-        const { verifiedPapers, issues } = await CitationVerificationAgent.verify(relevantPapers, refinedTopic);
+        const { verifiedPapers, issues } = await CitationVerificationAgent.verify(relevantPapers.length > 0 ? relevantPapers : rawPapers, refinedTopic);
         
         // We keep all papers in the state for visibility, but only use verified ones for the pipeline
         const trulyVerified = verifiedPapers.filter(p => p.verified !== false);
+        
+        if (trulyVerified.length === 0) {
+          // If no papers verified, and we haven't tried a broad fallback yet, try one more time
+          if (currentIteration === 1) {
+            console.warn("No papers verified. Retrying with broad search...");
+            const broadKeywords = await SearchQueryAgent.getBroadKeywords(refinedTopic);
+            const broadPapers = await LiteratureAgent.executeSearch(broadKeywords.join(" "));
+            const broadVerified = await CitationVerificationAgent.verify(broadPapers, refinedTopic);
+            const broadTrulyVerified = broadVerified.verifiedPapers.filter(p => p.verified !== false);
+            
+            if (broadTrulyVerified.length > 0) {
+              verifiedPapers.push(...broadVerified.verifiedPapers);
+              trulyVerified.push(...broadTrulyVerified);
+            }
+          }
+        }
+
         if (trulyVerified.length === 0) {
           throw new Error(`Citation verification failed: No papers could be verified in real-world databases. Issues: ${issues.join(", ")}`);
+        }
+
+        // Add verified chunks to vector store for RAG
+        const allChunks: Chunk[] = [];
+        trulyVerified.forEach(p => {
+          if (p.chunks) allChunks.push(...p.chunks);
+        });
+        if (allChunks.length > 0) {
+          await vectorStore.addDocuments(allChunks.map(c => ({
+            id: `${c.source}-${c.metadata.index}`,
+            text: c.text,
+            metadata: { ...c.metadata, source: c.source }
+          })));
         }
 
         // 3b. Selection Agent
