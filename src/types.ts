@@ -18,6 +18,7 @@ export interface Paper {
   citation: string;
   verified?: boolean;
   chunks?: Chunk[];
+  keyFindings?: string[];
 }
 
 export interface Hypothesis {
@@ -122,6 +123,7 @@ export type AgentStatus =
   | 'searching' 
   | 'filtering_relevance'
   | 'verifying_citations'
+  | 'extracting_findings'
   | 'identifying_gaps'
   | 'hypothesizing' 
   | 'checking_novelty'

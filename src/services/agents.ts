@@ -107,22 +107,52 @@ export const SearchQueryAgent = {
   }
 };
 
-async function fetchWithRetry(url: string, retries = 3, backoff = 1000): Promise<Response> {
+async function fetchWithRetry(url: string, retries = 5, backoff = 2000): Promise<Response> {
+  const timeout = 15000; // 15s timeout for ArXiv
+  
   for (let i = 0; i < retries; i++) {
-    const response = await fetch(url);
-    if (response.status === 429 && i < retries - 1) {
-      const waitTime = backoff * Math.pow(2, i);
-      console.warn(`ArXiv API rate limited (429). Retrying in ${waitTime}ms...`);
-      await new Promise(resolve => setTimeout(resolve, waitTime));
-      continue;
+    const controller = new AbortController();
+    const id = setTimeout(() => controller.abort(), timeout);
+    
+    try {
+      const response = await fetch(url, { signal: controller.signal });
+      clearTimeout(id);
+      
+      if (response.status === 429 && i < retries - 1) {
+        const waitTime = backoff * Math.pow(2, i) + (Math.random() * 1000);
+        console.warn(`ArXiv API rate limited (429). Retrying in ${Math.round(waitTime)}ms... (Attempt ${i + 1}/${retries})`);
+        await new Promise(resolve => setTimeout(resolve, waitTime));
+        continue;
+      }
+      
+      if (response.status >= 500 && i < retries - 1) {
+        const waitTime = backoff * Math.pow(1.5, i);
+        console.warn(`ArXiv API server error (${response.status}). Retrying in ${Math.round(waitTime)}ms...`);
+        await new Promise(resolve => setTimeout(resolve, waitTime));
+        continue;
+      }
+
+      return response;
+    } catch (error: any) {
+      clearTimeout(id);
+      if (error.name === 'AbortError') {
+        console.warn(`ArXiv API request timed out. Retrying... (Attempt ${i + 1}/${retries})`);
+      } else {
+        console.warn(`ArXiv API request failed: ${error.message}. Retrying... (Attempt ${i + 1}/${retries})`);
+      }
+      
+      if (i < retries - 1) {
+        await new Promise(resolve => setTimeout(resolve, backoff));
+        continue;
+      }
+      throw error;
     }
-    return response;
   }
-  return fetch(url); // Final attempt
+  return fetch(url); // Final attempt without timeout/signal if everything else failed
 }
 
 export const LiteratureAgent = {
-  async fetchPapers(topic: string): Promise<Paper[]> {
+  async fetchPapers(topic: string, onProgress?: (msg: string) => void): Promise<Paper[]> {
     const allPapers: Paper[] = [];
     const seenTitles = new Set<string>();
 
@@ -136,32 +166,43 @@ export const LiteratureAgent = {
       }
     };
 
-    // Strategy 1: Refined Query
-    const refinedQuery = await SearchQueryAgent.refineQuery(topic);
-    console.log(`Search Strategy 1 (Refined): "${refinedQuery}"`);
-    addPapers(await this.executeSearch(refinedQuery));
+    try {
+      // Strategy 1: Refined Query
+      onProgress?.("Generating optimized search query...");
+      const refinedQuery = await SearchQueryAgent.refineQuery(topic);
+      console.log(`Search Strategy 1 (Refined): "${refinedQuery}"`);
+      onProgress?.(`Searching ArXiv for: ${refinedQuery}`);
+      addPapers(await this.executeSearch(refinedQuery));
 
-    // Strategy 2: Original Topic
-    if (allPapers.length < 5 && refinedQuery !== topic) {
-      console.log(`Search Strategy 2 (Original): "${topic}"`);
-      addPapers(await this.executeSearch(topic));
-    }
-
-    // Strategy 3: Broad Keywords
-    if (allPapers.length < 5) {
-      console.log("Search Strategy 3 (Broad Keywords)");
-      const keywords = await SearchQueryAgent.getBroadKeywords(topic);
-      for (const keyword of keywords) {
-        if (allPapers.length >= 10) break;
-        console.log(`Trying keyword: "${keyword}"`);
-        addPapers(await this.executeSearch(keyword));
+      // Strategy 2: Original Topic
+      if (allPapers.length < 5 && refinedQuery !== topic) {
+        console.log(`Search Strategy 2 (Original): "${topic}"`);
+        onProgress?.(`Searching ArXiv for original topic: ${topic}`);
+        addPapers(await this.executeSearch(topic));
       }
-    }
 
-    // Strategy 4: Very Broad Fallback (AI/ML general)
-    if (allPapers.length === 0) {
-      console.log("Search Strategy 4 (Very Broad Fallback)");
-      addPapers(await this.executeSearch("artificial intelligence machine learning"));
+      // Strategy 3: Broad Keywords
+      if (allPapers.length < 5) {
+        console.log("Search Strategy 3 (Broad Keywords)");
+        onProgress?.("Extracting broad keywords for fallback search...");
+        const keywords = await SearchQueryAgent.getBroadKeywords(topic);
+        for (const keyword of keywords) {
+          if (allPapers.length >= 12) break;
+          console.log(`Trying keyword: "${keyword}"`);
+          onProgress?.(`Searching ArXiv for keyword: ${keyword}`);
+          addPapers(await this.executeSearch(keyword));
+        }
+      }
+
+      // Strategy 4: Very Broad Fallback (AI/ML general)
+      if (allPapers.length === 0) {
+        console.log("Search Strategy 4 (Very Broad Fallback)");
+        onProgress?.("Performing broad fallback search (AI/ML general)...");
+        addPapers(await this.executeSearch("artificial intelligence machine learning"));
+      }
+    } catch (error) {
+      console.error("LiteratureAgent.fetchPapers error:", error);
+      // Don't throw, return what we have (even if empty) to allow the workflow to handle it
     }
     
     return allPapers;
@@ -208,9 +249,48 @@ export const LiteratureAgent = {
         published: entry.published || new Date().toISOString(),
         link: entry.id || "#",
         citation: `${authors.join(", ")} (${year}). ${title}. arXiv:${(entry.id || "").split('/').pop()}`,
-        chunks: ChunkingAgent.chunkPaper(title, summary)
+        chunks: ChunkingAgent.chunkPaper(title, summary),
+        keyFindings: []
       };
     });
+  }
+};
+
+export const KeyFindingsAgent = {
+  async extractPaperFindings(paper: Paper): Promise<string[]> {
+    const prompt = `Extract 2-3 key findings or conclusions from the following research paper summary.
+    Keep each finding concise and technically accurate.
+    
+    Title: ${paper.title}
+    Summary: ${paper.summary}
+    
+    Return a JSON object:
+    {
+      "keyFindings": ["Finding 1", "Finding 2"]
+    }`;
+
+    try {
+      const result = await generateJSON<{ keyFindings: string[] }>(prompt, "You are an expert at summarizing complex research papers into concise key findings.");
+      return result.keyFindings || [];
+    } catch (e) {
+      console.error(`Failed to extract findings for ${paper.title}:`, e);
+      return [];
+    }
+  },
+
+  async extract(papers: Paper[], onProgress?: (msg: string) => void): Promise<Paper[]> {
+    if (papers.length === 0) return [];
+
+    onProgress?.(`Extracting key findings for ${papers.length} papers in parallel...`);
+    
+    const enrichedPapers = await Promise.all(
+      papers.map(async (paper) => {
+        const findings = await this.extractPaperFindings(paper);
+        return { ...paper, keyFindings: findings };
+      })
+    );
+    
+    return enrichedPapers;
   }
 };
 
@@ -286,28 +366,67 @@ export const ChunkingAgent = {
 };
 
 export const TopicRelevanceAgent = {
-  async filterRelevantPapers(topic: string, papers: Paper[]): Promise<Paper[]> {
-    if (papers.length === 0) return [];
-
-    const prompt = `Evaluate the relevance of the following research papers to the topic: "${topic}".
-    For each paper, determine if it is directly relevant or highly related.
+  async isRelevant(topic: string, paper: Paper): Promise<boolean> {
+    const prompt = `Evaluate the relevance of the following research paper to the topic: "${topic}".
+    Determine if it is directly relevant or highly related.
     
-    Papers:
-    ${papers.map((p, i) => `ID: ${i} | Title: ${p.title} | Summary: ${p.summary.slice(0, 300)}...`).join("\n\n")}
+    Title: ${paper.title}
+    Summary: ${paper.summary.slice(0, 500)}...
     
-    Return a JSON object with the indices of papers that are TRULY relevant to "${topic}":
+    Return a JSON object:
     {
-      "relevantIndices": [number, number, ...]
+      "isRelevant": boolean
     }`;
 
-    const result = await generateJSON<{ relevantIndices: number[] }>(prompt, "You are a strict academic reviewer who filters out irrelevant search results.");
-    const relevantIndices = result.relevantIndices || [];
-    return relevantIndices.map(idx => papers[idx]).filter(p => !!p);
+    try {
+      const result = await generateJSON<{ isRelevant: boolean }>(prompt, "You are a strict academic reviewer who filters out irrelevant search results.");
+      return !!result.isRelevant;
+    } catch (e) {
+      console.error(`Relevance check failed for ${paper.title}:`, e);
+      return true; // Default to true on error to avoid losing potential papers
+    }
+  },
+
+  async filterRelevantPapers(topic: string, papers: Paper[], onProgress?: (msg: string) => void): Promise<Paper[]> {
+    if (papers.length === 0) return [];
+
+    onProgress?.(`Filtering ${papers.length} papers for relevance in parallel...`);
+    
+    const relevanceResults = await Promise.all(
+      papers.map(async (paper) => {
+        const relevant = await this.isRelevant(topic, paper);
+        return { paper, relevant };
+      })
+    );
+
+    return relevanceResults.filter(r => r.relevant).map(r => r.paper);
   }
 };
 
 export const CitationVerificationAgent = {
+  async checkConsistency(topic: string, paper: Paper): Promise<boolean> {
+    const prompt = `Verify that the following paper is REAL and RELEVANT to the topic: "${topic}".
+    Check if the title and summary make sense and are not hallucinations.
+    
+    Title: ${paper.title}
+    Summary: ${paper.summary.slice(0, 300)}...
+    
+    Return a JSON object:
+    {
+      "isConsistent": boolean
+    }`;
+
+    try {
+      const result = await generateJSON<{ isConsistent: boolean }>(prompt, "You are a meticulous academic auditor who detects hallucinations.");
+      return !!result.isConsistent;
+    } catch (e) {
+      return true;
+    }
+  },
+
   async verifyWithOpenAlex(title: string, authors: string[] = []): Promise<boolean> {
+    const timeout = 10000; // 10s timeout for OpenAlex
+    
     try {
       // Clean title for search: remove punctuation, lowercase, and take first 100 chars
       const cleanTitle = title.replace(/[^\w\s]/gi, '').toLowerCase().trim();
@@ -315,30 +434,40 @@ export const CitationVerificationAgent = {
       // Strategy 1: Title Search
       const titleUrl = `https://api.openalex.org/works?filter=title.search:${encodeURIComponent(cleanTitle.slice(0, 100))}&mailto=saviturius7@gmail.com`;
       
-      const response = await fetch(titleUrl);
-      if (!response.ok) return false;
+      const controller = new AbortController();
+      const id = setTimeout(() => controller.abort(), timeout);
       
-      const data = await response.json();
-      
-      if (data.results && data.results.length > 0) {
-        // Check top 3 results for a match
-        for (const result of data.results.slice(0, 3)) {
-          const resultTitle = result.display_name.toLowerCase().replace(/[^\w\s]/gi, '').trim();
-          
-          // Fuzzy match: check if one contains the other or high overlap
-          if (resultTitle.includes(cleanTitle) || cleanTitle.includes(resultTitle)) {
-            return true;
-          }
-          
-          // Substring match for long titles
-          if (cleanTitle.length > 30 && resultTitle.length > 30) {
-            const startOfSearch = cleanTitle.slice(0, 30);
-            const startOfResult = resultTitle.slice(0, 30);
-            if (startOfResult.includes(startOfSearch) || startOfSearch.includes(startOfResult)) {
+      try {
+        const response = await fetch(titleUrl, { signal: controller.signal });
+        clearTimeout(id);
+        
+        if (!response.ok) return false;
+        
+        const data = await response.json();
+        
+        if (data.results && data.results.length > 0) {
+          // Check top 3 results for a match
+          for (const result of data.results.slice(0, 3)) {
+            const resultTitle = result.display_name.toLowerCase().replace(/[^\w\s]/gi, '').trim();
+            
+            // Fuzzy match: check if one contains the other or high overlap
+            if (resultTitle.includes(cleanTitle) || cleanTitle.includes(resultTitle)) {
               return true;
+            }
+            
+            // Substring match for long titles
+            if (cleanTitle.length > 30 && resultTitle.length > 30) {
+              const startOfSearch = cleanTitle.slice(0, 30);
+              const startOfResult = resultTitle.slice(0, 30);
+              if (startOfResult.includes(startOfSearch) || startOfSearch.includes(startOfResult)) {
+                return true;
+              }
             }
           }
         }
+      } catch (e) {
+        clearTimeout(id);
+        console.warn("OpenAlex title search error or timeout:", e);
       }
       
       // Strategy 2: Author + Year (if title search failed)
@@ -346,15 +475,26 @@ export const CitationVerificationAgent = {
         const firstAuthor = authors[0].split(' ').pop() || "";
         if (firstAuthor) {
           const authorUrl = `https://api.openalex.org/works?filter=author.search:${encodeURIComponent(firstAuthor)}&mailto=saviturius7@gmail.com`;
-          const authResponse = await fetch(authorUrl);
-          if (authResponse.ok) {
-            const authData = await authResponse.json();
-            for (const result of authData.results || []) {
-              const resultTitle = result.display_name.toLowerCase().replace(/[^\w\s]/gi, '').trim();
-              if (resultTitle.includes(cleanTitle.slice(0, 20)) || cleanTitle.includes(resultTitle.slice(0, 20))) {
-                return true;
+          
+          const authController = new AbortController();
+          const authId = setTimeout(() => authController.abort(), timeout);
+          
+          try {
+            const authResponse = await fetch(authorUrl, { signal: authController.signal });
+            authId && clearTimeout(authId);
+            
+            if (authResponse.ok) {
+              const authData = await authResponse.json();
+              for (const result of authData.results || []) {
+                const resultTitle = result.display_name.toLowerCase().replace(/[^\w\s]/gi, '').trim();
+                if (resultTitle.includes(cleanTitle.slice(0, 20)) || cleanTitle.includes(resultTitle.slice(0, 20))) {
+                  return true;
+                }
               }
             }
+          } catch (e) {
+            authId && clearTimeout(authId);
+            console.warn("OpenAlex author search error or timeout:", e);
           }
         }
       }
@@ -366,31 +506,19 @@ export const CitationVerificationAgent = {
     }
   },
 
-  async verify(papers: Paper[], topic: string): Promise<{ verifiedPapers: Paper[]; issues: string[] }> {
-    // 1. LLM Pre-filtering (Consistency check)
-    const prompt = `Verify that the following papers are REAL and RELEVANT to the topic: "${topic}".
-    Check if the titles and summaries make sense and are not hallucinations.
+  async verify(papers: Paper[], topic: string, onProgress?: (msg: string) => void): Promise<{ verifiedPapers: Paper[]; issues: string[] }> {
+    onProgress?.(`Verifying ${papers.length} papers (Consistency + Real-world DBs) in parallel...`);
     
-    Papers:
-    ${papers.map((p, i) => `[${i+1}] Title: ${p.title}\nSummary: ${p.summary.slice(0, 200)}...`).join("\n\n")}
-    
-    Return a JSON object:
-    {
-      "verifiedIndices": [number, number, ...],
-      "issues": ["Issue 1", "Issue 2", ...]
-    }`;
-    
-    const result = await generateJSON<{ verifiedIndices: number[]; issues: string[] }>(prompt, "You are a meticulous academic auditor who detects hallucinations and irrelevant content.");
-    const verifiedIndices = new Set(result.verifiedIndices || []);
-    
-    // 2. Real-world Verification Loop (OpenAlex)
-    const issues: string[] = [...(result.issues || [])];
+    const issues: string[] = [];
     
     // We verify in parallel for speed
     const verificationResults = await Promise.all(
-      papers.map(async (paper, i) => {
-        const llmVerified = verifiedIndices.has(i + 1);
-        const realWorldVerified = await this.verifyWithOpenAlex(paper.title, paper.authors);
+      papers.map(async (paper) => {
+        // Run LLM check and OpenAlex check in parallel for this specific paper
+        const [llmVerified, realWorldVerified] = await Promise.all([
+          this.checkConsistency(topic, paper),
+          this.verifyWithOpenAlex(paper.title, paper.authors)
+        ]);
         
         // If it's from arXiv (has a link), we give it more benefit of the doubt
         const isArxiv = paper.link && paper.link.includes('arxiv.org');
@@ -400,18 +528,16 @@ export const CitationVerificationAgent = {
         // - If it's from arXiv AND LLM verified, we consider it verified even if OpenAlex is missing it (OpenAlex can be slow to index).
         const verified = realWorldVerified || (isArxiv && llmVerified);
         
+        if (!verified) {
+          issues.push(`Could not fully verify existence of paper: "${paper.title}"`);
+        }
+        
         return { 
           ...paper, 
           verified 
         };
       })
     );
-    
-    for (const paper of verificationResults) {
-      if (!paper.verified) {
-        issues.push(`Could not fully verify existence of paper: "${paper.title}" in real-world databases.`);
-      }
-    }
     
     return {
       verifiedPapers: verificationResults,

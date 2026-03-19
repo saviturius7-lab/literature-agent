@@ -5,6 +5,7 @@ function collectKeys(): string[] {
   const collected: string[] = [];
   
   // 1. Check for the bulk VITE_GEMINI_KEYS provided by vite.config.ts
+  // This is the primary source of keys, including those from AI Studio Secrets
   const bulkKeys = (import.meta as any).env.VITE_GEMINI_KEYS;
   if (bulkKeys) {
     if (Array.isArray(bulkKeys)) {
@@ -25,6 +26,7 @@ function collectKeys(): string[] {
   }
 
   // 2. Fallback to individual keys if they exist in the browser environment
+  // Note: Vite only supports static access like import.meta.env.VITE_GEMINI_API_KEY
   const primaryKey = (import.meta as any).env.VITE_GEMINI_API_KEY;
   if (primaryKey && primaryKey.trim()) {
     collected.push(primaryKey.trim());
@@ -50,14 +52,6 @@ function collectKeys(): string[] {
     }
   }
 
-  // 4. Legacy support for VITE_GEMINI_API_KEY_1 to 32
-  for (let i = 1; i <= 32; i++) {
-    const key = (import.meta as any).env[`VITE_GEMINI_API_KEY_${i}`];
-    if (key && key.trim()) {
-      collected.push(key.trim());
-    }
-  }
-
   // Final fallback: check for process.env.GEMINI_API_KEY (might be available if defined in vite.config.ts)
   try {
     const procKey = (process as any).env.GEMINI_API_KEY;
@@ -67,12 +61,17 @@ function collectKeys(): string[] {
   } catch (e) { /* ignore */ }
 
   const uniqueKeys = Array.from(new Set(collected)).filter(k => k && k.length > 10);
-  console.log(`[Gemini] Collected ${uniqueKeys.length} API keys for rotation.`);
+  console.log(`[Gemini] Collected ${uniqueKeys.length} unique API keys for rotation.`);
+  if (uniqueKeys.length > 0) {
+    console.log(`[Gemini] Key prefixes: ${uniqueKeys.map(k => k.slice(0, 6)).join(', ')}`);
+  } else {
+    console.warn(`[Gemini] NO API KEYS COLLECTED! Please check your environment variables or secrets.`);
+  }
   return uniqueKeys;
 }
 
 const allGeminiKeys = collectKeys();
-let currentKeyIndex = 0;
+let totalRetries = 0;
 
 // Track failed keys to avoid them in the same session
 const failedKeys = new Set<string>();
@@ -87,7 +86,7 @@ export function getGeminiStatus() {
   const coolingDown = Array.from(keyCooldowns.values()).filter(t => t > now).length;
   const available = total - failed - coolingDown;
   
-  return { total, failed, coolingDown, available };
+  return { total, failed, coolingDown, available, totalRetries };
 }
 
 // Simple semaphore to limit concurrent calls
@@ -114,60 +113,94 @@ class Semaphore {
   }
 }
 
-// Limit to 2 concurrent calls to avoid hitting RPM/concurrency limits too fast
-const geminiSemaphore = new Semaphore(2);
+// Limit concurrent calls based on the number of available keys to maximize throughput
+// while ensuring we don't hit global concurrency limits.
+const geminiSemaphore = new Semaphore(Math.max(4, allGeminiKeys.length));
+
+// Track keys currently performing a request to ensure even distribution
+const keysInUse = new Set<string>();
+
+// Track last used time for each key
+const keyLastUsed = new Map<string, number>();
+// Track consecutive failures for circuit breaker
+const keyFailureCounts = new Map<string, number>();
+const MAX_CONSECUTIVE_FAILURES = 5;
 
 async function withRetry<T>(fn: (ai: GoogleGenAI) => Promise<T>, retries = 50): Promise<T> {
   let lastError: any;
   
-  await geminiSemaphore.acquire();
-  
-  try {
-    for (let i = 0; i < retries; i++) {
+  for (let i = 0; i < retries; i++) {
+    await geminiSemaphore.acquire();
+    
+    let apiKey: string | undefined;
+    let released = false;
+
+    try {
       const now = Date.now();
+      
+      // 1. Find available keys (not failed, not cooling down, and NOT currently in use)
       const availableKeys = allGeminiKeys.filter(k => {
         if (failedKeys.has(k)) return false;
+        if (keysInUse.has(k)) return false; 
         const cooldownUntil = keyCooldowns.get(k) || 0;
         return now >= cooldownUntil;
       });
 
-      // If no keys are available (all cooling down or failed), use the one with the shortest cooldown
-      let apiKey: string;
       if (availableKeys.length === 0) {
         if (allGeminiKeys.length === 0) {
           throw new Error("No Gemini API keys found. Please add VITE_GEMINI_API_KEY to your environment variables or secrets.");
         }
         
+        // If all keys are busy or on cooldown, find the one that will be available soonest
         const sortedKeys = allGeminiKeys
           .filter(k => !failedKeys.has(k))
-          .sort((a, b) => (keyCooldowns.get(a) || 0) - (keyCooldowns.get(b) || 0));
+          .sort((a, b) => {
+            // Priority: not in use > in use
+            const aInUse = keysInUse.has(a) ? 1 : 0;
+            const bInUse = keysInUse.has(b) ? 1 : 0;
+            if (aInUse !== bInUse) return aInUse - bInUse;
+            
+            return (keyCooldowns.get(a) || 0) - (keyCooldowns.get(b) || 0);
+          });
         
         if (sortedKeys.length === 0) {
           throw new Error("All Gemini API keys have failed. Please check your keys and try again.");
         }
         
         apiKey = sortedKeys[0];
-        const waitTime = Math.max(0, (keyCooldowns.get(apiKey) || 0) - now);
-        if (waitTime > 0) {
-          console.log(`[Gemini] All keys on cooldown. Waiting ${Math.ceil(waitTime/1000)}s for the next available key...`);
-          await new Promise(resolve => setTimeout(resolve, waitTime + 500));
+        const cooldownUntil = keyCooldowns.get(apiKey) || 0;
+        const waitTime = Math.max(0, cooldownUntil - now);
+        
+        // If the best key is still in use or on a long cooldown, wait a bit
+        if (keysInUse.has(apiKey) || waitTime > 500) {
+          console.log(`[Gemini] All keys busy or on cooldown. Waiting for key ${apiKey.slice(0, 6)}...`);
+          geminiSemaphore.release();
+          released = true;
+          await new Promise(resolve => setTimeout(resolve, Math.min(waitTime + 500, 2000)));
+          continue;
         }
       } else {
-        // Rotate through available keys
-        apiKey = availableKeys[currentKeyIndex % availableKeys.length];
-        currentKeyIndex++;
+        // Sophisticated rotation: use the key that hasn't been used for the longest time
+        const sortedAvailable = availableKeys.sort((a, b) => (keyLastUsed.get(a) || 0) - (keyLastUsed.get(b) || 0));
+        apiKey = sortedAvailable[0];
       }
-      
+
+      keysInUse.add(apiKey);
+      keyLastUsed.set(apiKey, Date.now());
+      console.log(`[Gemini] Using key ${apiKey.slice(0, 6)}... (Active: ${keysInUse.size}/${allGeminiKeys.length})`);
       const ai = new GoogleGenAI({ apiKey });
       
       try {
-        return await fn(ai);
+        const result = await fn(ai);
+        // Success: reset failure count for this key
+        keyFailureCounts.set(apiKey, 0);
+        return result;
       } catch (error: any) {
+        totalRetries++;
         lastError = error;
         let message = error.message || "";
         let status = error.status || 0;
         
-        // If message is a JSON string, try to parse it to get status
         if (message.startsWith("{") && message.endsWith("}")) {
           try {
             const parsed = JSON.parse(message);
@@ -178,40 +211,100 @@ async function withRetry<T>(fn: (ai: GoogleGenAI) => Promise<T>, retries = 50): 
           } catch (e) { /* ignore */ }
         }
         
-        const isRateLimit = message.includes("429") || status === 429 || message.includes("RESOURCE_EXHAUSTED") || message.toLowerCase().includes("quota");
-        const isAuthError = message.includes("401") || status === 401 || message.includes("API_KEY_INVALID");
-        
+        const isRateLimit = status === 429 || message.includes("429") || message.includes("RESOURCE_EXHAUSTED") || message.toLowerCase().includes("quota");
+        const isAuthError = status === 401 || message.includes("401") || message.includes("API_KEY_INVALID");
+        const isTransientError = [500, 503, 504].includes(status) || message.includes("500") || message.includes("503") || message.includes("504") || message.toLowerCase().includes("internal error") || message.toLowerCase().includes("overloaded");
+        const isSafetyError = status === 400 && (message.toLowerCase().includes("safety") || message.toLowerCase().includes("blocked"));
+
         if (isAuthError) {
           console.error(`[Gemini] Key ${apiKey.slice(0, 6)}... is invalid or unauthorized. Removing from rotation.`);
           failedKeys.add(apiKey);
+          keysInUse.delete(apiKey);
+          geminiSemaphore.release();
+          released = true;
           continue;
         }
         
         if (isRateLimit) {
-          // Set a cooldown for this key
           const isQuota = message.toLowerCase().includes("quota");
           const cooldownMs = isQuota ? 60000 : 15000; 
           keyCooldowns.set(apiKey, Date.now() + cooldownMs);
-          console.warn(`[Gemini] Key ${apiKey.slice(0, 6)}... rate limited (${isQuota ? 'Quota' : 'Rate'}). Cooldown: ${cooldownMs/1000}s. Retrying...`);
+          console.warn(`[Gemini] Key ${apiKey.slice(0, 6)}... rate limited (${isQuota ? 'Quota' : 'Rate'}). Cooldown: ${cooldownMs/1000}s.`);
           
-          // Exponential backoff for the retry loop itself
-          const backoff = Math.min(30000, 2000 * Math.pow(1.5, i));
-          await new Promise(resolve => setTimeout(resolve, backoff));
+          keysInUse.delete(apiKey);
+          
+          // Check if any other keys are available right now
+          const otherKeysAvailable = allGeminiKeys.some(k => !failedKeys.has(k) && !keysInUse.has(k) && (keyCooldowns.get(k) || 0) <= Date.now());
+          
+          if (!otherKeysAvailable) {
+            const backoff = Math.min(10000, 1000 * Math.pow(1.5, i));
+            const jitter = Math.random() * 1000;
+            console.log(`[Gemini] No other keys available. Backing off for ${Math.round(backoff + jitter)}ms...`);
+            geminiSemaphore.release();
+            released = true;
+            await new Promise(resolve => setTimeout(resolve, backoff + jitter));
+          } else {
+            console.log(`[Gemini] Switching to another key immediately...`);
+            geminiSemaphore.release();
+            released = true;
+          }
+          continue;
+        }
+
+        if (isTransientError) {
+          const failures = (keyFailureCounts.get(apiKey) || 0) + 1;
+          keyFailureCounts.set(apiKey, failures);
+          
+          if (failures >= MAX_CONSECUTIVE_FAILURES) {
+            console.error(`[Gemini] Key ${apiKey.slice(0, 6)}... failed ${failures} times consecutively. Marking as failed.`);
+            failedKeys.add(apiKey);
+          } else {
+            keyCooldowns.set(apiKey, Date.now() + 5000);
+          }
+          
+          keysInUse.delete(apiKey);
+          const backoff = Math.min(30000, 1000 * Math.pow(2, i));
+          const jitter = Math.random() * 1000;
+          console.warn(`[Gemini] Transient error (${status}) with key ${apiKey.slice(0, 6)}...: ${message}. Retrying in ${Math.round(backoff + jitter)}ms...`);
+          
+          geminiSemaphore.release();
+          released = true;
+          await new Promise(resolve => setTimeout(resolve, backoff + jitter));
+          continue;
+        }
+
+        if (isSafetyError) {
+          console.error(`[Gemini] Request blocked by safety filters with key ${apiKey.slice(0, 6)}...: ${message}`);
+          keysInUse.delete(apiKey);
+          if (i >= 2) throw error; 
+          geminiSemaphore.release();
+          released = true;
           continue;
         }
         
         if (i < retries - 1) {
+          keysInUse.delete(apiKey);
           const backoff = Math.min(30000, 1000 * Math.pow(2, i));
-          console.warn(`[Gemini] Other error with key ${apiKey.slice(0, 6)}...: ${message}. Retrying in ${Math.round(backoff)}ms...`);
-          await new Promise(resolve => setTimeout(resolve, backoff));
+          const jitter = Math.random() * 1000;
+          console.warn(`[Gemini] Other error (${status}) with key ${apiKey.slice(0, 6)}...: ${message}. Retrying in ${Math.round(backoff + jitter)}ms...`);
+          
+          geminiSemaphore.release();
+          released = true;
+          await new Promise(resolve => setTimeout(resolve, backoff + jitter));
           continue;
         }
+        keysInUse.delete(apiKey);
         throw error;
+      } finally {
+        keysInUse.delete(apiKey);
+      }
+    } finally {
+      if (!released) {
+        geminiSemaphore.release();
       }
     }
-  } finally {
-    geminiSemaphore.release();
   }
+  
   throw lastError || new Error("Max retries reached");
 }
 

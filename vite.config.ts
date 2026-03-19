@@ -18,8 +18,18 @@ export default defineConfig(({mode}) => {
             key === 'VITE_GEMINI_KEYS' ||
             key === 'GEMINI_KEYS'
           )
-          .map(key => env[key])
-          .filter(val => val && typeof val === 'string' && val.length > 10 && !val.includes("TODO"))
+          .reduce((acc, key) => {
+            const val = env[key];
+            if (val && typeof val === 'string' && val.length > 10 && !val.includes("TODO")) {
+              // Handle comma-separated strings
+              if (val.includes(',')) {
+                acc.push(...val.split(',').map(k => k.trim()).filter(k => k.length > 10));
+              } else {
+                acc.push(val.trim());
+              }
+            }
+            return acc;
+          }, [] as string[])
       ),
     },
     resolve: {

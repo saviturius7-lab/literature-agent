@@ -14,7 +14,10 @@ import {
   Copy,
   Download,
   Printer,
-  RefreshCw
+  RefreshCw,
+  BarChart as BarChartIcon,
+  TrendingUp,
+  PieChart as PieChartIcon
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { clsx, type ClassValue } from 'clsx';
@@ -22,6 +25,19 @@ import { twMerge } from 'tailwind-merge';
 import Markdown from 'react-markdown';
 // @ts-ignore
 import html2pdf from 'html2pdf.js';
+import { 
+  BarChart, 
+  Bar, 
+  XAxis, 
+  YAxis, 
+  CartesianGrid, 
+  Tooltip, 
+  Legend, 
+  ResponsiveContainer,
+  Cell,
+  LineChart,
+  Line
+} from 'recharts';
 
 import { vectorStore } from './services/vectorStore';
 import { 
@@ -59,7 +75,8 @@ import {
   ReportAgent,
   TopicRelevanceAgent,
   VerificationAgent,
-  FactualityEvalAgent
+  FactualityEvalAgent,
+  KeyFindingsAgent
 } from './services/agents';
 import { getGeminiStatus } from './services/gemini';
 
@@ -88,6 +105,7 @@ export default function App() {
 
   const [inputTopic, setInputTopic] = useState('');
   const [copiedIndex, setCopiedIndex] = useState<number | null>(null);
+  const [searchingProgress, setSearchingProgress] = useState('');
   const [geminiStatus, setGeminiStatus] = useState(getGeminiStatus());
   const reportRef = useRef<HTMLDivElement>(null);
 
@@ -122,6 +140,7 @@ export default function App() {
       report: null,
       iteration: currentIteration
     }));
+    setSearchingProgress('');
 
     try {
       // Small delay between steps to avoid hitting rate limits
@@ -137,15 +156,17 @@ export default function App() {
 
       while (!isReliable && currentIteration <= MAX_ITERATIONS) {
         setState(prev => ({ ...prev, iteration: currentIteration, status: 'searching' }));
+        setSearchingProgress('Initializing literature search...');
 
         // 2. Literature Retrieval (REAL papers only)
-        let rawPapers = await LiteratureAgent.fetchPapers(refinedTopic);
+        let rawPapers = await LiteratureAgent.fetchPapers(refinedTopic, (msg) => setSearchingProgress(msg));
         await stepDelay();
         
         // If no papers found, try a broader search immediately
         if (rawPapers.length === 0) {
           console.log("No papers found with refined topic, trying original input...");
-          rawPapers = await LiteratureAgent.fetchPapers(inputTopic);
+          setSearchingProgress('No papers found for refined topic. Trying original input...');
+          rawPapers = await LiteratureAgent.fetchPapers(inputTopic, (msg) => setSearchingProgress(msg));
           await stepDelay();
         }
 
@@ -160,7 +181,13 @@ export default function App() {
         
         // 3. Citation Verification
         setState(prev => ({ ...prev, status: 'verifying_citations' }));
-        const { verifiedPapers, issues } = await CitationVerificationAgent.verify(relevantPapers.length > 0 ? relevantPapers : rawPapers, refinedTopic);
+        setSearchingProgress('Verifying citations against real-world databases...');
+        const { verifiedPapers, issues } = await CitationVerificationAgent.verify(relevantPapers.length > 0 ? relevantPapers : rawPapers, refinedTopic, (msg) => setSearchingProgress(msg));
+        await stepDelay();
+        
+        // Enrich with key findings (batch enrichment)
+        setState(prev => ({ ...prev, status: 'extracting_findings' }));
+        const enrichedPapers = await KeyFindingsAgent.extract(verifiedPapers);
         await stepDelay();
         
         // We keep all papers in the state for visibility, but only use verified ones for the pipeline
@@ -205,8 +232,8 @@ export default function App() {
         // 3b. Selection Agent
         const papers = await SelectionAgent.selectPapers(refinedTopic, trulyVerified);
         await stepDelay();
-        // We set the state to all verifiedPapers (including flagged ones) for the UI
-        setState(prev => ({ ...prev, status: 'identifying_gaps', papers: verifiedPapers }));
+        // We set the state to all enrichedPapers (including flagged ones) for the UI
+        setState(prev => ({ ...prev, status: 'identifying_gaps', papers: enrichedPapers }));
 
         // 4. Gap Identification
         // But we only use the selected (verified) papers for the next steps
@@ -447,6 +474,7 @@ ${(state.report.references || []).map(ref => `- ${ref}`).join('\n')}
     { id: 'refining_topic', label: 'Topic Selection', icon: Search },
     { id: 'searching', label: 'Literature Retrieval', icon: Search },
     { id: 'verifying_citations', label: 'Citation Verification', icon: ClipboardCheck },
+    { id: 'extracting_findings', label: 'Key Findings', icon: Lightbulb },
     { id: 'identifying_gaps', label: 'Gap Identification', icon: Lightbulb },
     { id: 'hypothesizing', label: 'Hypothesis Generation', icon: Lightbulb },
     { id: 'designing_experiment', label: 'Experiment Design', icon: BrainCircuit },
@@ -457,6 +485,7 @@ ${(state.report.references || []).map(ref => `- ${ref}`).join('\n')}
 
   const currentStepIndex = steps.findIndex(s => {
     if (state.status === 'filtering_relevance') return s.id === 'searching';
+    if (state.status === 'extracting_findings') return s.id === 'extracting_findings';
     if (state.status === 'checking_novelty' || state.status === 'extracting_contributions') return s.id === 'hypothesizing';
     if (state.status === 'formalizing_math' || state.status === 'generating_dataset') return s.id === 'designing_experiment';
     if (state.status === 'reviewing' || state.status === 'revising') return s.id === 'validating_results';
@@ -549,13 +578,45 @@ ${(state.report.references || []).map(ref => `- ${ref}`).join('\n')}
                   <p className="text-sm text-pink-pale/60 italic">Enter a topic to begin the multi-agent research workflow.</p>
                 )}
                 {state.status !== 'idle' && (
-                  <div className="flex items-center gap-3">
-                    {state.status !== 'completed' && state.status !== 'error' && (
-                      <Loader2 className="w-4 h-4 animate-spin text-pink-deep" />
+                  <div className="space-y-3">
+                    <div className="flex items-center gap-3">
+                      {state.status !== 'completed' && state.status !== 'error' && (
+                        <Loader2 className="w-4 h-4 animate-spin text-pink-deep" />
+                      )}
+                      <span className="text-sm font-medium capitalize">
+                        {state.status.replace('-', ' ')}...
+                      </span>
+                    </div>
+                    {state.status === 'searching' && searchingProgress && (
+                      <p className="text-[10px] text-pink-pale/60 italic pl-7 animate-pulse">
+                        {searchingProgress}
+                      </p>
                     )}
-                    <span className="text-sm font-medium capitalize">
-                      {state.status.replace('-', ' ')}...
-                    </span>
+                    
+                    {/* Gemini Status Overlay */}
+                    {geminiStatus.total > 0 && (
+                      <div className="pl-7 pt-2 border-t border-pink-pale/5 mt-2">
+                        <div className="flex items-center justify-between text-[9px] uppercase tracking-wider mb-1">
+                          <span className="text-pink-pale/40">API Status</span>
+                          <span className={cn(
+                            "font-bold",
+                            geminiStatus.available > 0 ? "text-emerald-500" : "text-amber-500"
+                          )}>
+                            {geminiStatus.available} / {geminiStatus.total} Keys Available
+                          </span>
+                        </div>
+                        {geminiStatus.coolingDown > 0 && (
+                          <p className="text-[8px] text-amber-500/80 italic">
+                            {geminiStatus.coolingDown} keys waiting for quota reset...
+                          </p>
+                        )}
+                        {geminiStatus.totalRetries > 0 && (
+                          <p className="text-[8px] text-pink-pale/30">
+                            Total API Retries: {geminiStatus.totalRetries}
+                          </p>
+                        )}
+                      </div>
+                    )}
                   </div>
                 )}
                 {state.error && (
@@ -592,57 +653,133 @@ ${(state.report.references || []).map(ref => `- ${ref}`).join('\n')}
                 <div className="absolute top-0 right-0 p-4 opacity-5">
                   <FlaskConical className="w-24 h-24 text-pink-deep" />
                 </div>
-                <h2 className="text-[10px] font-bold uppercase tracking-widest text-pink-pale/40 mb-6">Experimental Results</h2>
+                <div className="flex items-center gap-2 mb-6">
+                  <BarChartIcon className="w-4 h-4 text-pink-deep" />
+                  <h2 className="text-[10px] font-bold uppercase tracking-widest text-pink-pale/40">Experimental Results</h2>
+                </div>
+
                 <div className="grid grid-cols-2 gap-6 mb-8">
-                  <div>
+                  <div className="p-4 bg-dark-bg/50 rounded-xl border border-pink-pale/5">
                     <div className="text-3xl font-light mb-1 text-pink-deep">{(state.experiment.accuracy * 100).toFixed(1)}%</div>
                     <div className="text-[10px] uppercase tracking-wider text-pink-pale/40">Accuracy</div>
                   </div>
-                  <div>
+                  <div className="p-4 bg-dark-bg/50 rounded-xl border border-pink-pale/5">
                     <div className="text-3xl font-light mb-1 text-pink-deep">{(state.experiment.f1Score * 100).toFixed(1)}%</div>
                     <div className="text-[10px] uppercase tracking-wider text-pink-pale/40">F1 Score</div>
                   </div>
                 </div>
 
-                {state.experiment.baselines && state.experiment.baselines.length > 0 && (
-                  <div className="mb-8 p-4 bg-dark-bg rounded-xl border border-pink-pale/5">
-                    <h3 className="text-[9px] uppercase tracking-widest font-bold text-pink-deep mb-3">Baseline Comparison</h3>
-                    <div className="space-y-2">
-                      {(state.experiment.baselines || []).map((b, i) => (
-                        <div key={`baseline-${i}`} className="flex justify-between items-center text-[10px]">
-                          <span className="text-pink-pale/60">{b.name}</span>
-                          <span className="font-mono text-pink-deep">{(b.accuracy * 100).toFixed(1)}%</span>
-                        </div>
-                      ))}
+                {/* Performance Comparison Chart */}
+                <div className="mb-8 h-64 w-full">
+                  <h3 className="text-[9px] uppercase tracking-widest font-bold text-pink-deep mb-4 flex items-center gap-2">
+                    <TrendingUp className="w-3 h-3" />
+                    Performance vs Baselines
+                  </h3>
+                  <ResponsiveContainer width="100%" height="100%">
+                    <BarChart
+                      data={[
+                        { name: 'Proposed', accuracy: state.experiment.accuracy * 100 },
+                        ...(state.experiment.baselines || []).map(b => ({ name: b.name, accuracy: b.accuracy * 100 }))
+                      ]}
+                      margin={{ top: 5, right: 5, left: -20, bottom: 5 }}
+                    >
+                      <CartesianGrid strokeDasharray="3 3" stroke="#ffffff10" vertical={false} />
+                      <XAxis 
+                        dataKey="name" 
+                        stroke="#f5f2ed40" 
+                        fontSize={10} 
+                        tickLine={false} 
+                        axisLine={false}
+                      />
+                      <YAxis 
+                        stroke="#f5f2ed40" 
+                        fontSize={10} 
+                        tickLine={false} 
+                        axisLine={false}
+                        domain={[0, 100]}
+                      />
+                      <Tooltip 
+                        contentStyle={{ backgroundColor: '#1a1a1a', border: '1px solid #f5f2ed10', borderRadius: '8px', fontSize: '10px' }}
+                        itemStyle={{ color: '#FF6321' }}
+                      />
+                      <Bar dataKey="accuracy" radius={[4, 4, 0, 0]}>
+                        {(
+                          [
+                            { name: 'Proposed', accuracy: state.experiment.accuracy * 100 },
+                            ...(state.experiment.baselines || []).map(b => ({ name: b.name, accuracy: b.accuracy * 100 }))
+                          ]
+                        ).map((entry, index) => (
+                          <Cell key={`cell-${index}`} fill={index === 0 ? '#FF6321' : '#f5f2ed20'} />
+                        ))}
+                      </Bar>
+                    </BarChart>
+                  </ResponsiveContainer>
+                </div>
+
+                {state.experiment.ablationStudies && state.experiment.ablationStudies.length > 0 && (
+                  <div className="mb-8">
+                    <h3 className="text-[9px] uppercase tracking-widest font-bold text-pink-pale/40 mb-4 flex items-center gap-2">
+                      <PieChartIcon className="w-3 h-3" />
+                      Ablation Impact
+                    </h3>
+                    <div className="h-48 w-full">
+                      <ResponsiveContainer width="100%" height="100%">
+                        <BarChart
+                          layout="vertical"
+                          data={(state.experiment.ablationStudies || []).map(a => ({
+                            name: a.componentRemoved,
+                            impact: a.impactOnMetric * 100
+                          }))}
+                          margin={{ top: 5, right: 30, left: 40, bottom: 5 }}
+                        >
+                          <CartesianGrid strokeDasharray="3 3" stroke="#ffffff10" horizontal={false} />
+                          <XAxis type="number" hide />
+                          <YAxis 
+                            dataKey="name" 
+                            type="category" 
+                            stroke="#f5f2ed40" 
+                            fontSize={9} 
+                            tickLine={false} 
+                            axisLine={false}
+                            width={80}
+                          />
+                          <Tooltip 
+                            contentStyle={{ backgroundColor: '#1a1a1a', border: '1px solid #f5f2ed10', borderRadius: '8px', fontSize: '10px' }}
+                          />
+                          <Bar dataKey="impact" fill="#FF6321" radius={[0, 4, 4, 0]} barSize={12} />
+                        </BarChart>
+                      </ResponsiveContainer>
                     </div>
                   </div>
                 )}
 
-                {state.experiment.ablationStudies && state.experiment.ablationStudies.length > 0 && (
-                  <div className="mb-8">
-                    <h3 className="text-[9px] uppercase tracking-widest font-bold text-pink-pale/40 mb-3">Ablation Studies</h3>
-                    <div className="space-y-3">
-                      {(state.experiment.ablationStudies || []).map((a, i) => (
-                        <div key={`ablation-${i}`} className="text-[10px]">
-                          <div className="flex justify-between mb-1">
-                            <span className="text-pink-pale/60 italic">{a.componentRemoved} removed</span>
-                            <span className="text-pink-deep">{(a.impactOnMetric * 100).toFixed(1)}% drop</span>
-                          </div>
-                          <div className="w-full bg-dark-bg h-1 rounded-full overflow-hidden">
-                            <div 
-                              className="bg-pink-deep h-full" 
-                              style={{ width: `${Math.min(100, a.impactOnMetric * 500)}%` }}
-                            />
-                          </div>
-                        </div>
-                      ))}
+                {state.reviewerCritiques && state.reviewerCritiques.length > 0 && (
+                  <div className="mb-8 pt-6 border-t border-pink-pale/10">
+                    <h3 className="text-[9px] uppercase tracking-widest font-bold text-pink-pale/40 mb-4">Reviewer Ratings</h3>
+                    <div className="h-32 w-full">
+                      <ResponsiveContainer width="100%" height="100%">
+                        <LineChart
+                          data={state.reviewerCritiques.map((c, i) => ({
+                            name: `R${i+1}`,
+                            rating: c.rating
+                          }))}
+                        >
+                          <CartesianGrid strokeDasharray="3 3" stroke="#ffffff10" vertical={false} />
+                          <XAxis dataKey="name" stroke="#f5f2ed40" fontSize={10} tickLine={false} axisLine={false} />
+                          <YAxis stroke="#f5f2ed40" fontSize={10} tickLine={false} axisLine={false} domain={[0, 10]} />
+                          <Tooltip 
+                            contentStyle={{ backgroundColor: '#1a1a1a', border: '1px solid #f5f2ed10', borderRadius: '8px', fontSize: '10px' }}
+                          />
+                          <Line type="monotone" dataKey="rating" stroke="#FF6321" strokeWidth={2} dot={{ fill: '#FF6321', r: 4 }} />
+                        </LineChart>
+                      </ResponsiveContainer>
                     </div>
                   </div>
                 )}
 
                 <div className="pt-6 border-t border-pink-pale/10">
                   <div className="text-[10px] uppercase tracking-widest text-pink-pale/40 mb-3">Execution Logs</div>
-                  <div className="space-y-2 font-mono text-[10px] text-pink-pale/60">
+                  <div className="space-y-2 font-mono text-[10px] text-pink-pale/60 max-h-40 overflow-y-auto custom-scrollbar">
                     {(state.experiment.logs || []).map((log, i) => (
                       <div key={`log-${i}`} className="flex gap-2">
                         <span className="text-pink-deep/40">[{i+1}]</span>
@@ -711,6 +848,20 @@ ${(state.report.references || []).map(ref => `- ${ref}`).join('\n')}
                         </div>
                         <p className="text-sm text-pink-pale/60 line-clamp-3 mb-4 leading-relaxed">{paper.summary}</p>
                         
+                        {paper.keyFindings && paper.keyFindings.length > 0 && (
+                          <div className="mb-4 space-y-2">
+                            <div className="text-[9px] uppercase tracking-widest font-bold text-pink-deep/60 mb-2">Key Findings</div>
+                            <div className="grid grid-cols-1 gap-2">
+                              {paper.keyFindings.map((finding, idx) => (
+                                <div key={`finding-${idx}`} className="flex items-start gap-2 p-2 bg-pink-deep/5 border border-pink-deep/10 rounded-lg">
+                                  <div className="w-1 h-1 rounded-full bg-pink-deep mt-1.5 shrink-0" />
+                                  <p className="text-[11px] text-pink-pale/80 italic serif leading-relaxed">{finding}</p>
+                                </div>
+                              ))}
+                            </div>
+                          </div>
+                        )}
+
                         <div className="mb-4 p-3 bg-dark-bg rounded-xl">
                           <div className="text-[9px] uppercase tracking-widest font-bold text-pink-pale/20 mb-1">Citation</div>
                           <div className="text-[11px] text-pink-pale/40 font-mono leading-relaxed">{paper.citation}</div>
@@ -1168,6 +1319,9 @@ ${(state.report.references || []).map(ref => `- ${ref}`).join('\n')}
                 <span title="Cooling Down Keys" className={geminiStatus.coolingDown > 0 ? "text-amber-400" : ""}>COOL: {geminiStatus.coolingDown}</span>
                 <span title="Failed Keys" className={geminiStatus.failed > 0 ? "text-red-400" : ""}>FAIL: {geminiStatus.failed}</span>
                 <span title="Total Keys">TOTAL: {geminiStatus.total}</span>
+                {geminiStatus.totalRetries > 0 && (
+                  <span title="Total Retries" className="text-pink-deep/60 animate-pulse">RETRIES: {geminiStatus.totalRetries}</span>
+                )}
               </div>
             </div>
           </div>
