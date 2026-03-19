@@ -4,28 +4,13 @@ import { GoogleGenAI } from "@google/genai";
 function collectKeys(): string[] {
   const collected: string[] = [];
   
-  // 0. Check for the default GEMINI_API_KEY (from process.env or import.meta.env)
-  const defaultKey = (import.meta as any).env.VITE_GEMINI_API_KEY || (process as any).env.GEMINI_API_KEY;
-  if (defaultKey && defaultKey.trim()) {
-    collected.push(defaultKey.trim());
-  }
-  
-  // 1. Check for individual keys VITE_GEMINI_API_KEY_1 to VITE_GEMINI_API_KEY_32
-  for (let i = 1; i <= 32; i++) {
-    const key = (import.meta as any).env[`VITE_GEMINI_API_KEY_${i}`];
-    if (key && key.trim()) {
-      collected.push(key.trim());
-    }
-  }
-
-  // 2. Check for the bulk VITE_GEMINI_KEYS (JSON array or comma-separated)
+  // 1. Check for the bulk VITE_GEMINI_KEYS provided by vite.config.ts
   const bulkKeys = (import.meta as any).env.VITE_GEMINI_KEYS;
   if (bulkKeys) {
     if (Array.isArray(bulkKeys)) {
       collected.push(...bulkKeys.filter(k => typeof k === 'string' && k.trim()));
     } else if (typeof bulkKeys === 'string') {
       try {
-        // Try JSON parse first
         const parsed = JSON.parse(bulkKeys);
         if (Array.isArray(parsed)) {
           collected.push(...parsed.filter(k => typeof k === 'string' && k.trim()));
@@ -33,15 +18,57 @@ function collectKeys(): string[] {
           collected.push(bulkKeys.trim());
         }
       } catch (e) {
-        // Fallback to comma-separated
         const split = bulkKeys.split(',').map(k => k.trim()).filter(k => k);
         collected.push(...split);
       }
     }
   }
 
-  // Remove duplicates
-  return Array.from(new Set(collected));
+  // 2. Fallback to individual keys if they exist in the browser environment
+  const primaryKey = (import.meta as any).env.VITE_GEMINI_API_KEY;
+  if (primaryKey && primaryKey.trim()) {
+    collected.push(primaryKey.trim());
+  }
+  
+  // 3. Check for the bulk VITE_GEMINI_API_KEYS (common alias)
+  const apiBulkKeys = (import.meta as any).env.VITE_GEMINI_API_KEYS;
+  if (apiBulkKeys) {
+    if (Array.isArray(apiBulkKeys)) {
+      collected.push(...apiBulkKeys.filter(k => typeof k === 'string' && k.trim()));
+    } else if (typeof apiBulkKeys === 'string') {
+      try {
+        const parsed = JSON.parse(apiBulkKeys);
+        if (Array.isArray(parsed)) {
+          collected.push(...parsed.filter(k => typeof k === 'string' && k.trim()));
+        } else {
+          collected.push(apiBulkKeys.trim());
+        }
+      } catch (e) {
+        const split = apiBulkKeys.split(',').map(k => k.trim()).filter(k => k);
+        collected.push(...split);
+      }
+    }
+  }
+
+  // 4. Legacy support for VITE_GEMINI_API_KEY_1 to 32
+  for (let i = 1; i <= 32; i++) {
+    const key = (import.meta as any).env[`VITE_GEMINI_API_KEY_${i}`];
+    if (key && key.trim()) {
+      collected.push(key.trim());
+    }
+  }
+
+  // Final fallback: check for process.env.GEMINI_API_KEY (might be available if defined in vite.config.ts)
+  try {
+    const procKey = (process as any).env.GEMINI_API_KEY;
+    if (procKey && procKey.trim()) {
+      collected.push(procKey.trim());
+    }
+  } catch (e) { /* ignore */ }
+
+  const uniqueKeys = Array.from(new Set(collected)).filter(k => k && k.length > 10);
+  console.log(`[Gemini] Collected ${uniqueKeys.length} API keys for rotation.`);
+  return uniqueKeys;
 }
 
 const allGeminiKeys = collectKeys();
@@ -53,80 +80,137 @@ const failedKeys = new Set<string>();
 // Track rate-limited keys and when they can be used again
 const keyCooldowns = new Map<string, number>();
 
-async function withRetry<T>(fn: (ai: GoogleGenAI) => Promise<T>, retries = 30): Promise<T> {
+export function getGeminiStatus() {
+  const now = Date.now();
+  const total = allGeminiKeys.length;
+  const failed = failedKeys.size;
+  const coolingDown = Array.from(keyCooldowns.values()).filter(t => t > now).length;
+  const available = total - failed - coolingDown;
+  
+  return { total, failed, coolingDown, available };
+}
+
+// Simple semaphore to limit concurrent calls
+class Semaphore {
+  private queue: (() => void)[] = [];
+  private active = 0;
+  constructor(private max: number) {}
+
+  async acquire() {
+    if (this.active < this.max) {
+      this.active++;
+      return;
+    }
+    return new Promise<void>(resolve => this.queue.push(resolve));
+  }
+
+  release() {
+    this.active--;
+    if (this.queue.length > 0) {
+      this.active++;
+      const next = this.queue.shift();
+      if (next) next();
+    }
+  }
+}
+
+// Limit to 2 concurrent calls to avoid hitting RPM/concurrency limits too fast
+const geminiSemaphore = new Semaphore(2);
+
+async function withRetry<T>(fn: (ai: GoogleGenAI) => Promise<T>, retries = 50): Promise<T> {
   let lastError: any;
   
-  for (let i = 0; i < retries; i++) {
-    const now = Date.now();
-    const availableKeys = allGeminiKeys.filter(k => {
-      if (failedKeys.has(k)) return false;
-      const cooldownUntil = keyCooldowns.get(k) || 0;
-      return now >= cooldownUntil;
-    });
+  await geminiSemaphore.acquire();
+  
+  try {
+    for (let i = 0; i < retries; i++) {
+      const now = Date.now();
+      const availableKeys = allGeminiKeys.filter(k => {
+        if (failedKeys.has(k)) return false;
+        const cooldownUntil = keyCooldowns.get(k) || 0;
+        return now >= cooldownUntil;
+      });
 
-    // If no keys are available (all cooling down or failed), use the one with the shortest cooldown
-    let apiKey: string;
-    if (availableKeys.length === 0) {
-      const sortedKeys = allGeminiKeys
-        .filter(k => !failedKeys.has(k))
-        .sort((a, b) => (keyCooldowns.get(a) || 0) - (keyCooldowns.get(b) || 0));
-      
-      apiKey = sortedKeys[0] || allGeminiKeys[0];
-      
-      // If even the best key is still cooling down, wait a bit
-      const waitTime = Math.max(0, (keyCooldowns.get(apiKey) || 0) - now);
-      if (waitTime > 0) {
-        console.log(`All keys cooling down. Waiting ${waitTime}ms for best key...`);
-        await new Promise(resolve => setTimeout(resolve, waitTime));
+      // If no keys are available (all cooling down or failed), use the one with the shortest cooldown
+      let apiKey: string;
+      if (availableKeys.length === 0) {
+        if (allGeminiKeys.length === 0) {
+          throw new Error("No Gemini API keys found. Please add VITE_GEMINI_API_KEY to your environment variables or secrets.");
+        }
+        
+        const sortedKeys = allGeminiKeys
+          .filter(k => !failedKeys.has(k))
+          .sort((a, b) => (keyCooldowns.get(a) || 0) - (keyCooldowns.get(b) || 0));
+        
+        if (sortedKeys.length === 0) {
+          throw new Error("All Gemini API keys have failed. Please check your keys and try again.");
+        }
+        
+        apiKey = sortedKeys[0];
+        const waitTime = Math.max(0, (keyCooldowns.get(apiKey) || 0) - now);
+        if (waitTime > 0) {
+          console.log(`[Gemini] All keys on cooldown. Waiting ${Math.ceil(waitTime/1000)}s for the next available key...`);
+          await new Promise(resolve => setTimeout(resolve, waitTime + 500));
+        }
+      } else {
+        // Rotate through available keys
+        apiKey = availableKeys[currentKeyIndex % availableKeys.length];
+        currentKeyIndex++;
       }
-    } else {
-      apiKey = availableKeys[currentKeyIndex % availableKeys.length];
-      currentKeyIndex++;
+      
+      const ai = new GoogleGenAI({ apiKey });
+      
+      try {
+        return await fn(ai);
+      } catch (error: any) {
+        lastError = error;
+        let message = error.message || "";
+        let status = error.status || 0;
+        
+        // If message is a JSON string, try to parse it to get status
+        if (message.startsWith("{") && message.endsWith("}")) {
+          try {
+            const parsed = JSON.parse(message);
+            if (parsed.error && parsed.error.code) {
+              status = parsed.error.code;
+              message = parsed.error.message || message;
+            }
+          } catch (e) { /* ignore */ }
+        }
+        
+        const isRateLimit = message.includes("429") || status === 429 || message.includes("RESOURCE_EXHAUSTED") || message.toLowerCase().includes("quota");
+        const isAuthError = message.includes("401") || status === 401 || message.includes("API_KEY_INVALID");
+        
+        if (isAuthError) {
+          console.error(`[Gemini] Key ${apiKey.slice(0, 6)}... is invalid or unauthorized. Removing from rotation.`);
+          failedKeys.add(apiKey);
+          continue;
+        }
+        
+        if (isRateLimit) {
+          // Set a cooldown for this key
+          const isQuota = message.toLowerCase().includes("quota");
+          const cooldownMs = isQuota ? 60000 : 15000; 
+          keyCooldowns.set(apiKey, Date.now() + cooldownMs);
+          console.warn(`[Gemini] Key ${apiKey.slice(0, 6)}... rate limited (${isQuota ? 'Quota' : 'Rate'}). Cooldown: ${cooldownMs/1000}s. Retrying...`);
+          
+          // Exponential backoff for the retry loop itself
+          const backoff = Math.min(30000, 2000 * Math.pow(1.5, i));
+          await new Promise(resolve => setTimeout(resolve, backoff));
+          continue;
+        }
+        
+        if (i < retries - 1) {
+          const backoff = Math.min(30000, 1000 * Math.pow(2, i));
+          console.warn(`[Gemini] Other error with key ${apiKey.slice(0, 6)}...: ${message}. Retrying in ${Math.round(backoff)}ms...`);
+          await new Promise(resolve => setTimeout(resolve, backoff));
+          continue;
+        }
+        throw error;
+      }
     }
-    
-    const ai = new GoogleGenAI({ apiKey });
-    
-    try {
-      return await fn(ai);
-    } catch (error: any) {
-      lastError = error;
-      let message = error.message || "";
-      let status = error.status || 0;
-      
-      // If message is a JSON string, try to parse it to get status
-      if (message.startsWith("{") && message.endsWith("}")) {
-        try {
-          const parsed = JSON.parse(message);
-          if (parsed.error && parsed.error.code) {
-            status = parsed.error.code;
-            message = parsed.error.message || message;
-          }
-        } catch (e) { /* ignore */ }
-      }
-      
-      const isRateLimit = message.includes("429") || status === 429 || message.includes("RESOURCE_EXHAUSTED") || message.toLowerCase().includes("quota");
-      const isAuthError = message.includes("401") || status === 401 || message.includes("API_KEY_INVALID");
-      
-      if (isAuthError) {
-        failedKeys.add(apiKey);
-      }
-      
-      if (isRateLimit) {
-        // Set a cooldown for this key (e.g., 10 seconds for free tier)
-        // If it's a "quota" error, it might be a daily limit, so cool down for longer
-        const isQuota = message.toLowerCase().includes("quota");
-        const cooldownMs = isQuota ? 60000 : 10000; 
-        keyCooldowns.set(apiKey, Date.now() + cooldownMs);
-      }
-      
-      if (i < retries - 1 && (isRateLimit || isAuthError)) {
-        const backoff = Math.min(30000, 2000 * Math.pow(1.5, i)); // Exponential backoff up to 30s
-        console.warn(`Gemini API error (${isRateLimit ? "Rate limit" : "Auth error"}). Retrying in ${Math.round(backoff)}ms...`);
-        await new Promise(resolve => setTimeout(resolve, backoff));
-        continue;
-      }
-      throw error;
-    }
+  } finally {
+    geminiSemaphore.release();
   }
   throw lastError || new Error("Max retries reached");
 }

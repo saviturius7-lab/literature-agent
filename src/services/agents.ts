@@ -852,20 +852,27 @@ export const ReportAgent = {
     Algorithm: ${math.algorithmSteps.join(" -> ")}
     Experiment Plan: ${experimentPlan.protocol}
     Dataset: ${datasetCard.name} - ${datasetCard.description}
+    Dataset Features: ${datasetCard.features.join(", ")}
+    Dataset Size: ${datasetCard.size}
+    Dataset Source: ${datasetCard.source}
     Results: Accuracy ${result.accuracy.toFixed(2)}, F1 ${result.f1Score.toFixed(2)}
     Baselines: ${result.baselines.map(b => `${b.name} (${b.accuracy.toFixed(2)})`).join(", ")}
     Ablations: ${result.ablationStudies.map(a => `${a.componentRemoved} (-${a.impactOnMetric.toFixed(2)})`).join(", ")}
     Failure Cases: ${result.failureCases.map(f => f.example).join("; ")}
+    Implementation Details: ${result.implementationDetails}
+    Experiment Logs (Evidence):
+    ${result.logs.join("\n")}
     Reviewer Feedback: ${critiques.map(c => c.weaknesses.join(", ")).join("; ")}
     
     You MUST include:
     1. A clear "Contributions" section in the Introduction.
     2. A "Mathematical Formalization" section with notation and algorithms.
-    3. A "Dataset Card" section describing the data.
+    3. A "Dataset Description" section with full details (name, description, features, size, source).
     4. A "Baseline Comparison" table/section with at least 2 baselines.
     5. An "Ablation Study" section.
     6. A "Failure Case Analysis" section with concrete examples.
     7. An "Implementation Details" section for reproducibility.
+    8. An "Experimental Evidence" section that includes the execution logs as proof of the experiments being conducted.
     
     Requirements:
     - Professional academic language.

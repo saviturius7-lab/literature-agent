@@ -61,6 +61,7 @@ import {
   VerificationAgent,
   FactualityEvalAgent
 } from './services/agents';
+import { getGeminiStatus } from './services/gemini';
 
 function cn(...inputs: ClassValue[]) {
   return twMerge(clsx(inputs));
@@ -87,7 +88,15 @@ export default function App() {
 
   const [inputTopic, setInputTopic] = useState('');
   const [copiedIndex, setCopiedIndex] = useState<number | null>(null);
+  const [geminiStatus, setGeminiStatus] = useState(getGeminiStatus());
   const reportRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    const interval = setInterval(() => {
+      setGeminiStatus(getGeminiStatus());
+    }, 2000);
+    return () => clearInterval(interval);
+  }, []);
 
   const runResearch = async () => {
     if (!inputTopic.trim()) return;
@@ -115,23 +124,29 @@ export default function App() {
     }));
 
     try {
+      // Small delay between steps to avoid hitting rate limits
+      const stepDelay = (ms = 1500) => new Promise(resolve => setTimeout(resolve, ms));
+
       // Clear vector store for new research
       vectorStore.clear();
 
       // 1. Topic Selection (Refinement)
       const refinedTopic = await TopicRefinementAgent.refine(inputTopic);
       setState(prev => ({ ...prev, topic: refinedTopic }));
+      await stepDelay();
 
       while (!isReliable && currentIteration <= MAX_ITERATIONS) {
         setState(prev => ({ ...prev, iteration: currentIteration, status: 'searching' }));
 
         // 2. Literature Retrieval (REAL papers only)
         let rawPapers = await LiteratureAgent.fetchPapers(refinedTopic);
+        await stepDelay();
         
         // If no papers found, try a broader search immediately
         if (rawPapers.length === 0) {
           console.log("No papers found with refined topic, trying original input...");
           rawPapers = await LiteratureAgent.fetchPapers(inputTopic);
+          await stepDelay();
         }
 
         if (rawPapers.length === 0) {
@@ -141,10 +156,12 @@ export default function App() {
         // 2a. Topic Relevance Agent
         setState(prev => ({ ...prev, status: 'filtering_relevance' }));
         const relevantPapers = await TopicRelevanceAgent.filterRelevantPapers(refinedTopic, rawPapers);
+        await stepDelay();
         
         // 3. Citation Verification
         setState(prev => ({ ...prev, status: 'verifying_citations' }));
         const { verifiedPapers, issues } = await CitationVerificationAgent.verify(relevantPapers.length > 0 ? relevantPapers : rawPapers, refinedTopic);
+        await stepDelay();
         
         // We keep all papers in the state for visibility, but only use verified ones for the pipeline
         const trulyVerified = verifiedPapers.filter(p => p.verified !== false);
@@ -154,8 +171,11 @@ export default function App() {
           if (currentIteration === 1) {
             console.warn("No papers verified. Retrying with broad search...");
             const broadKeywords = await SearchQueryAgent.getBroadKeywords(refinedTopic);
+            await stepDelay();
             const broadPapers = await LiteratureAgent.executeSearch(broadKeywords.join(" "));
+            await stepDelay();
             const broadVerified = await CitationVerificationAgent.verify(broadPapers, refinedTopic);
+            await stepDelay();
             const broadTrulyVerified = broadVerified.verifiedPapers.filter(p => p.verified !== false);
             
             if (broadTrulyVerified.length > 0) {
@@ -184,16 +204,19 @@ export default function App() {
 
         // 3b. Selection Agent
         const papers = await SelectionAgent.selectPapers(refinedTopic, trulyVerified);
+        await stepDelay();
         // We set the state to all verifiedPapers (including flagged ones) for the UI
         setState(prev => ({ ...prev, status: 'identifying_gaps', papers: verifiedPapers }));
 
         // 4. Gap Identification
         // But we only use the selected (verified) papers for the next steps
         const gapIdentification = await GapIdentificationAgent.identify(papers, refinedTopic);
+        await stepDelay();
         setState(prev => ({ ...prev, status: 'hypothesizing', gapIdentification }));
 
         // 5. Hypothesis Generation
         let hypothesis = await HypothesisAgent.generateHypothesis(refinedTopic, papers);
+        await stepDelay();
         
         // 5b. Novelty Checker (Loop up to 5 times)
         let noveltyAttempts = 0;
@@ -203,12 +226,14 @@ export default function App() {
         while (!isNovel && noveltyAttempts < MAX_NOVELTY_ATTEMPTS) {
           setState(prev => ({ ...prev, status: 'checking_novelty', hypothesis }));
           const novelty = await NoveltyCheckerAgent.checkNovelty(hypothesis, papers, noveltyAttempts);
+          await stepDelay();
           isNovel = novelty.isNovel;
           noveltyFeedback = novelty.feedback || "";
           
           if (!isNovel) {
             console.log(`Hypothesis not novel enough (Attempt ${noveltyAttempts + 1}), regenerating...`);
             hypothesis = await HypothesisAgent.generateHypothesis(refinedTopic, papers, noveltyFeedback);
+            await stepDelay();
             noveltyAttempts++;
           }
         }
@@ -220,35 +245,42 @@ export default function App() {
         // 5c. Contribution Agent
         setState(prev => ({ ...prev, status: 'extracting_contributions', hypothesis }));
         const contributions = await ContributionAgent.extractContributions(hypothesis);
+        await stepDelay();
         setState(prev => ({ ...prev, contributions }));
 
         // 5d. Math Formalizer
         setState(prev => ({ ...prev, status: 'formalizing_math' }));
         const mathFormalization = await MathFormalizerAgent.formalize(hypothesis);
+        await stepDelay();
         setState(prev => ({ ...prev, mathFormalization }));
 
         // 6. Experiment Design (constrained)
         setState(prev => ({ ...prev, status: 'designing_experiment' }));
         const experimentPlan = await ExperimentDesignAgent.design(hypothesis, contributions);
+        await stepDelay();
         setState(prev => ({ ...prev, experimentPlan }));
 
         // 6b. Dataset Generator
         setState(prev => ({ ...prev, status: 'generating_dataset' }));
         const datasetCard = await DatasetGeneratorAgent.generate(experimentPlan);
+        await stepDelay();
         setState(prev => ({ ...prev, datasetCard }));
 
         // 7. Execution / simulation with limits
         setState(prev => ({ ...prev, status: 'experimenting' }));
         const experiment = await ExperimentRunner.runExperiment(hypothesis, experimentPlan);
+        await stepDelay();
         setState(prev => ({ ...prev, experiment }));
 
         // 8. Result Validation
         setState(prev => ({ ...prev, status: 'validating_results' }));
         const validationResult = await ResultValidationAgent.validate(hypothesis, experiment);
+        await stepDelay();
         
         // 8b. Reviewer Simulator
         setState(prev => ({ ...prev, status: 'reviewing' }));
         const reviewerCritiques = await ReviewerSimulatorAgent.simulate(hypothesis, experiment);
+        await stepDelay();
         setState(prev => ({ ...prev, reviewerCritiques }));
 
         // Check reliability (average rating > 7 AND result validation passed)
@@ -261,6 +293,7 @@ export default function App() {
           // Update hypothesis and experiment with revised versions
           setState(prev => ({ ...prev, status: 'revising' }));
           const revision = await RevisionAgent.revise(hypothesis, experiment, reviewerCritiques);
+          await stepDelay();
           
           // Update hypothesis and experiment with revised versions
           hypothesis = revision.revisedHypothesis;
@@ -273,7 +306,7 @@ export default function App() {
             experiment: revisedExperiment 
           }));
           
-          await new Promise(resolve => setTimeout(resolve, 2000));
+          await new Promise(resolve => setTimeout(resolve, 4000));
           continue;
         }
 
@@ -291,6 +324,7 @@ export default function App() {
           experiment, 
           reviewerCritiques
         );
+        await stepDelay();
 
         // 6. Verification Agent
         setState(prev => ({ ...prev, status: 'verifying_report', report }));
@@ -350,8 +384,27 @@ ${state.report.introduction}
 ## Methodology
 ${state.report.methodology}
 
+${state.datasetCard ? `
+## Dataset Description
+- **Name**: ${state.datasetCard.name}
+- **Size**: ${state.datasetCard.size}
+- **Source**: ${state.datasetCard.source}
+- **Description**: ${state.datasetCard.description}
+- **Features**: ${state.datasetCard.features.join(', ')}
+` : ''}
+
 ## Results
 ${state.report.results}
+
+${state.experiment ? `
+## Experimental Evidence (Logs)
+\`\`\`
+${state.experiment.logs.join('\n')}
+\`\`\`
+
+## Implementation Details
+${state.experiment.implementationDetails}
+` : ''}
 
 ## Discussion
 ${state.report.discussion}
@@ -859,6 +912,7 @@ ${(state.report.references || []).map(ref => `- ${ref}`).join('\n')}
                             <span className="text-xs font-bold text-pink-deep">{state.datasetCard.name}</span>
                             <span className="text-[10px] px-1.5 py-0.5 bg-pink-deep/10 text-pink-deep rounded border border-pink-deep/20 uppercase">{state.datasetCard.size}</span>
                           </div>
+                          <div className="text-[9px] uppercase tracking-widest font-bold text-pink-deep mb-1">Description</div>
                           <p className="text-[11px] text-pink-pale/60 leading-relaxed">{state.datasetCard.description}</p>
                           <div className="flex flex-wrap gap-1.5">
                             {(state.datasetCard.features || []).map((f, i) => (
@@ -993,6 +1047,51 @@ ${(state.report.references || []).map(ref => `- ${ref}`).join('\n')}
                       <div className="text-sm leading-relaxed text-pink-pale/70 prose-invert"><Markdown>{state.report.results}</Markdown></div>
                     </section>
 
+                    {state.datasetCard && (
+                      <section className="bg-dark-bg border border-pink-pale/10 p-8 rounded-2xl">
+                        <h3 className="text-xs uppercase tracking-widest font-bold mb-4 text-pink-deep">Dataset Description</h3>
+                        <div className="space-y-4">
+                          <div className="flex justify-between items-center">
+                            <span className="text-sm font-bold text-pink-deep">{state.datasetCard.name}</span>
+                            <span className="text-[10px] px-2 py-1 bg-pink-deep/10 text-pink-deep rounded border border-pink-deep/20 uppercase">{state.datasetCard.size}</span>
+                          </div>
+                          <p className="text-sm text-pink-pale/70 leading-relaxed italic">{state.datasetCard.description}</p>
+                          <div className="grid grid-cols-2 gap-4 text-xs">
+                            <div>
+                              <span className="text-pink-deep/40 uppercase tracking-widest font-bold block mb-1">Source</span>
+                              <span className="text-pink-pale/60">{state.datasetCard.source}</span>
+                            </div>
+                            <div>
+                              <span className="text-pink-deep/40 uppercase tracking-widest font-bold block mb-1">Features</span>
+                              <div className="flex flex-wrap gap-1">
+                                {state.datasetCard.features.map((f, i) => (
+                                  <span key={i} className="text-pink-pale/40">#{f}</span>
+                                ))}
+                              </div>
+                            </div>
+                          </div>
+                        </div>
+                      </section>
+                    )}
+
+                    {state.experiment && (
+                      <section className="bg-dark-bg border border-pink-pale/10 p-8 rounded-2xl overflow-hidden">
+                        <h3 className="text-xs uppercase tracking-widest font-bold mb-4 text-pink-deep">Experimental Evidence (Execution Logs)</h3>
+                        <div className="bg-black/40 p-4 rounded-xl font-mono text-[10px] text-pink-pale/40 leading-relaxed overflow-x-auto max-h-60 overflow-y-auto">
+                          {state.experiment.logs.map((log, i) => (
+                            <div key={i} className="flex gap-3">
+                              <span className="text-pink-deep/20">[{i+1}]</span>
+                              <span>{log}</span>
+                            </div>
+                          ))}
+                        </div>
+                        <div className="mt-4 pt-4 border-t border-pink-pale/5">
+                          <h4 className="text-[10px] uppercase tracking-widest font-bold mb-2 text-pink-deep/60">Implementation Details</h4>
+                          <p className="text-xs text-pink-pale/50 italic">{state.experiment.implementationDetails}</p>
+                        </div>
+                      </section>
+                    )}
+
                     <div className="grid grid-cols-1 md:grid-cols-2 gap-12">
                       <section>
                         <h3 className="text-xs uppercase tracking-widest font-bold mb-4 border-b border-pink-pale/10 pb-2 text-pink-deep">Discussion</h3>
@@ -1049,9 +1148,28 @@ ${(state.report.references || []).map(ref => `- ${ref}`).join('\n')}
       {/* Footer */}
       <footer className="border-t border-pink-pale/10 py-12 mt-24 bg-dark-surface">
         <div className="max-w-6xl mx-auto px-6 flex flex-col md:flex-row items-center justify-between gap-6">
-          <div className="flex items-center gap-2 opacity-40">
-            <BrainCircuit className="w-4 h-4" />
-            <span className="text-[10px] uppercase tracking-widest font-bold">Literature Agent v1.1</span>
+          <div className="flex items-center gap-6">
+            <div className="flex items-center gap-2 opacity-40">
+              <BrainCircuit className="w-4 h-4" />
+              <span className="text-[10px] uppercase tracking-widest font-bold">Literature Agent v1.1</span>
+            </div>
+            
+            {/* Gemini API Status Monitor */}
+            <div className="flex items-center gap-4 px-4 py-1.5 bg-black/20 rounded-full border border-pink-pale/5">
+              <div className="flex items-center gap-1.5">
+                <div className={cn(
+                  "w-1.5 h-1.5 rounded-full animate-pulse",
+                  geminiStatus.available > 0 ? "bg-emerald-500" : "bg-red-500"
+                )} />
+                <span className="text-[9px] uppercase tracking-widest font-bold text-pink-pale/40">API Status</span>
+              </div>
+              <div className="flex items-center gap-3 text-[9px] font-mono text-pink-pale/60">
+                <span title="Available Keys">AVAIL: {geminiStatus.available}</span>
+                <span title="Cooling Down Keys" className={geminiStatus.coolingDown > 0 ? "text-amber-400" : ""}>COOL: {geminiStatus.coolingDown}</span>
+                <span title="Failed Keys" className={geminiStatus.failed > 0 ? "text-red-400" : ""}>FAIL: {geminiStatus.failed}</span>
+                <span title="Total Keys">TOTAL: {geminiStatus.total}</span>
+              </div>
+            </div>
           </div>
           <p className="text-[10px] text-pink-pale/40 uppercase tracking-widest font-bold">
             Powered by Gemini 3.1 & arXiv API

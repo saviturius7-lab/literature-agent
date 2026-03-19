@@ -10,9 +10,16 @@ export default defineConfig(({mode}) => {
     define: {
       'import.meta.env.VITE_GEMINI_KEYS': JSON.stringify(
         Object.keys(env)
-          .filter(key => key === 'GEMINI_API_KEY' || key.startsWith('GEMINI_API_KEY_'))
+          .filter(key => 
+            key === 'GEMINI_API_KEY' || 
+            key === 'VITE_GEMINI_API_KEY' ||
+            key.startsWith('GEMINI_API_KEY_') ||
+            key.startsWith('VITE_GEMINI_API_KEY_') ||
+            key === 'VITE_GEMINI_KEYS' ||
+            key === 'GEMINI_KEYS'
+          )
           .map(key => env[key])
-          .filter(val => val && val.length > 10 && !val.includes("TODO"))
+          .filter(val => val && typeof val === 'string' && val.length > 10 && !val.includes("TODO"))
       ),
     },
     resolve: {
