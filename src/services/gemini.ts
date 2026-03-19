@@ -4,6 +4,12 @@ import { GoogleGenAI } from "@google/genai";
 function collectKeys(): string[] {
   const collected: string[] = [];
   
+  // 0. Check for the default GEMINI_API_KEY (from process.env or import.meta.env)
+  const defaultKey = (import.meta as any).env.VITE_GEMINI_API_KEY || (process as any).env.GEMINI_API_KEY;
+  if (defaultKey && defaultKey.trim()) {
+    collected.push(defaultKey.trim());
+  }
+  
   // 1. Check for individual keys VITE_GEMINI_API_KEY_1 to VITE_GEMINI_API_KEY_32
   for (let i = 1; i <= 32; i++) {
     const key = (import.meta as any).env[`VITE_GEMINI_API_KEY_${i}`];
@@ -106,12 +112,15 @@ async function withRetry<T>(fn: (ai: GoogleGenAI) => Promise<T>, retries = 30): 
       }
       
       if (isRateLimit) {
-        // Set a cooldown for this key (e.g., 5 seconds for free tier)
-        keyCooldowns.set(apiKey, Date.now() + 5000);
+        // Set a cooldown for this key (e.g., 10 seconds for free tier)
+        // If it's a "quota" error, it might be a daily limit, so cool down for longer
+        const isQuota = message.toLowerCase().includes("quota");
+        const cooldownMs = isQuota ? 60000 : 10000; 
+        keyCooldowns.set(apiKey, Date.now() + cooldownMs);
       }
       
       if (i < retries - 1 && (isRateLimit || isAuthError)) {
-        const backoff = Math.min(15000, 1000 * Math.pow(1.5, i)); // Exponential backoff up to 15s
+        const backoff = Math.min(30000, 2000 * Math.pow(1.5, i)); // Exponential backoff up to 30s
         console.warn(`Gemini API error (${isRateLimit ? "Rate limit" : "Auth error"}). Retrying in ${Math.round(backoff)}ms...`);
         await new Promise(resolve => setTimeout(resolve, backoff));
         continue;
@@ -179,27 +188,36 @@ function sanitizeJSON(text: string): string {
 }
 
 export async function generateJSON<T>(prompt: string, systemInstruction?: string, model: string = "gemini-3-flash-preview"): Promise<T> {
-  const text = await withRetry(async (ai) => {
-    const response = await ai.models.generateContent({
-      model,
-      contents: prompt,
-      config: { 
-        systemInstruction,
-        responseMimeType: "application/json"
-      },
-    });
-    
-    return response.text || "{}";
-  });
-
-  const cleaned = sanitizeJSON(text);
-  
   try {
-    return JSON.parse(cleaned) as T;
-  } catch (e) {
-    console.error("Failed to parse Gemini JSON response:", text);
-    console.error("Cleaned version:", cleaned);
-    throw new Error(`Invalid JSON response from Gemini: ${e instanceof Error ? e.message : String(e)}`);
+    const text = await withRetry(async (ai) => {
+      const response = await ai.models.generateContent({
+        model,
+        contents: prompt,
+        config: { 
+          systemInstruction,
+          responseMimeType: "application/json"
+        },
+      });
+      
+      return response.text || "{}";
+    });
+
+    const cleaned = sanitizeJSON(text);
+    
+    try {
+      return JSON.parse(cleaned) as T;
+    } catch (e) {
+      console.error("Failed to parse Gemini JSON response:", text);
+      console.error("Cleaned version:", cleaned);
+      throw new Error(`Invalid JSON response from Gemini: ${e instanceof Error ? e.message : String(e)}`);
+    }
+  } catch (error: any) {
+    // If Pro model fails with rate limit, fallback to Flash automatically
+    if (model.includes("pro") && (error.message.includes("429") || error.message.includes("RESOURCE_EXHAUSTED") || error.message.toLowerCase().includes("quota"))) {
+      console.warn(`Pro model rate limited, falling back to Flash for JSON generation...`);
+      return generateJSON<T>(prompt, systemInstruction, "gemini-3-flash-preview");
+    }
+    throw error;
   }
 }
 
