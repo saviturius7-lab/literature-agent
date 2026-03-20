@@ -1,4 +1,5 @@
 import { GoogleGenAI } from "@google/genai";
+import { generateDeepSeekJSON, getDeepSeekStatus as getDSStatus } from "./deepseek";
 
 // Helper to collect keys from import.meta.env
 function collectKeys(): string[] {
@@ -83,10 +84,12 @@ export function getGeminiStatus() {
   const now = Date.now();
   const total = allGeminiKeys.length;
   const failed = failedKeys.size;
-  const coolingDown = Array.from(keyCooldowns.values()).filter(t => t > now).length;
+  const cooldowns = Array.from(keyCooldowns.values());
+  const coolingDown = cooldowns.filter(t => t > now).length;
+  const hardQuota = cooldowns.filter(t => t > now + (2 * 60 * 1000)).length;
   const available = total - failed - coolingDown;
   
-  return { total, failed, coolingDown, available, totalRetries };
+  return { total, failed, coolingDown, hardQuota, available, totalRetries };
 }
 
 // Simple semaphore to limit concurrent calls
@@ -113,18 +116,29 @@ class Semaphore {
   }
 }
 
-// Limit concurrent calls based on the number of available keys to maximize throughput
-// while ensuring we don't hit global concurrency limits.
-const geminiSemaphore = new Semaphore(Math.max(4, allGeminiKeys.length));
+// Limit concurrent calls to a reasonable number to avoid overwhelming the API
+// and triggering "Quota Exceeded" errors due to bursts.
+const MAX_CONCURRENCY = 8;
+const geminiSemaphore = new Semaphore(MAX_CONCURRENCY);
 
 // Track keys currently performing a request to ensure even distribution
-const keysInUse = new Set<string>();
+const keysInUse = new Map<string, number>();
 
 // Track last used time for each key
 const keyLastUsed = new Map<string, number>();
 // Track consecutive failures for circuit breaker
 const keyFailureCounts = new Map<string, number>();
 const MAX_CONSECUTIVE_FAILURES = 5;
+
+// Export reset function for the UI
+export function resetGeminiStatus() {
+  failedKeys.clear();
+  keyCooldowns.clear();
+  keyFailureCounts.clear();
+  keysInUse.clear();
+  totalRetries = 0;
+  console.log("[Gemini] API status and rotation state reset.");
+}
 
 async function withRetry<T>(fn: (ai: GoogleGenAI) => Promise<T>, retries = 50): Promise<T> {
   let lastError: any;
@@ -141,7 +155,11 @@ async function withRetry<T>(fn: (ai: GoogleGenAI) => Promise<T>, retries = 50): 
       // 1. Find available keys (not failed, not cooling down, and NOT currently in use)
       const availableKeys = allGeminiKeys.filter(k => {
         if (failedKeys.has(k)) return false;
-        if (keysInUse.has(k)) return false; 
+        // keysInUse is now a Map, but we still want to filter out keys that are "too busy"
+        // For now, let's allow up to 2 concurrent requests per key if we have to, 
+        // but prefer keys with 0 active requests.
+        const inUseCount = keysInUse.get(k) || 0;
+        if (inUseCount >= 2) return false; 
         const cooldownUntil = keyCooldowns.get(k) || 0;
         return now >= cooldownUntil;
       });
@@ -155,24 +173,31 @@ async function withRetry<T>(fn: (ai: GoogleGenAI) => Promise<T>, retries = 50): 
         const sortedKeys = allGeminiKeys
           .filter(k => !failedKeys.has(k))
           .sort((a, b) => {
-            // Priority: not in use > in use
-            const aInUse = keysInUse.has(a) ? 1 : 0;
-            const bInUse = keysInUse.has(b) ? 1 : 0;
+            // Priority: fewer active requests
+            const aInUse = keysInUse.get(a) || 0;
+            const bInUse = keysInUse.get(b) || 0;
             if (aInUse !== bInUse) return aInUse - bInUse;
             
             return (keyCooldowns.get(a) || 0) - (keyCooldowns.get(b) || 0);
           });
         
         if (sortedKeys.length === 0) {
-          throw new Error("All Gemini API keys have failed. Please check your keys and try again.");
+          throw new Error("All Gemini API keys have failed. Please check your keys in Settings -> Secrets and try again.");
         }
         
         apiKey = sortedKeys[0];
         const cooldownUntil = keyCooldowns.get(apiKey) || 0;
         const waitTime = Math.max(0, cooldownUntil - now);
         
-        // If the best key is still in use or on a long cooldown, wait a bit
-        if (keysInUse.has(apiKey) || waitTime > 500) {
+        // If the best key is on a very long cooldown (hard quota), and it's the best we have,
+        // we might as well tell the user now instead of making them wait 5+ minutes.
+        if (waitTime > 4 * 60 * 1000) {
+          throw new Error("All available Gemini API keys have reached their hard quota (billing/plan limits). Please wait for the 5-minute cooldown or add a new API key in Settings -> Secrets.");
+        }
+        
+        // If the best key is still very busy or on a moderate cooldown, wait a bit
+        const activeCount = keysInUse.get(apiKey) || 0;
+        if (activeCount >= 2 || waitTime > 500) {
           console.log(`[Gemini] All keys busy or on cooldown. Waiting for key ${apiKey.slice(0, 6)}...`);
           geminiSemaphore.release();
           released = true;
@@ -185,9 +210,9 @@ async function withRetry<T>(fn: (ai: GoogleGenAI) => Promise<T>, retries = 50): 
         apiKey = sortedAvailable[0];
       }
 
-      keysInUse.add(apiKey);
+      keysInUse.set(apiKey, (keysInUse.get(apiKey) || 0) + 1);
       keyLastUsed.set(apiKey, Date.now());
-      console.log(`[Gemini] Using key ${apiKey.slice(0, 6)}... (Active: ${keysInUse.size}/${allGeminiKeys.length})`);
+      console.log(`[Gemini] Using key ${apiKey.slice(0, 6)}... (Active on key: ${keysInUse.get(apiKey)})`);
       const ai = new GoogleGenAI({ apiKey });
       
       try {
@@ -219,7 +244,7 @@ async function withRetry<T>(fn: (ai: GoogleGenAI) => Promise<T>, retries = 50): 
         if (isAuthError) {
           console.error(`[Gemini] Key ${apiKey.slice(0, 6)}... is invalid or unauthorized. Removing from rotation.`);
           failedKeys.add(apiKey);
-          keysInUse.delete(apiKey);
+          keysInUse.set(apiKey, Math.max(0, (keysInUse.get(apiKey) || 0) - 1));
           geminiSemaphore.release();
           released = true;
           continue;
@@ -227,23 +252,34 @@ async function withRetry<T>(fn: (ai: GoogleGenAI) => Promise<T>, retries = 50): 
         
         if (isRateLimit) {
           const isQuota = message.toLowerCase().includes("quota");
-          const cooldownMs = isQuota ? 60000 : 15000; 
-          keyCooldowns.set(apiKey, Date.now() + cooldownMs);
-          console.warn(`[Gemini] Key ${apiKey.slice(0, 6)}... rate limited (${isQuota ? 'Quota' : 'Rate'}). Cooldown: ${cooldownMs/1000}s.`);
+          const isHardQuota = message.toLowerCase().includes("billing") || message.toLowerCase().includes("plan") || message.toLowerCase().includes("daily limit") || message.toLowerCase().includes("budget");
           
-          keysInUse.delete(apiKey);
+          if (isHardQuota) {
+            // Use a 5-minute cooldown for hard quota instead of 10
+            const longCooldownMs = 5 * 60 * 1000; 
+            keyCooldowns.set(apiKey, Date.now() + longCooldownMs);
+            console.error(`[Gemini] Key ${apiKey.slice(0, 6)}... reached hard quota (billing/plan). Cooling down for 5m.`);
+          } else {
+            const cooldownMs = isQuota ? 60000 : 15000; 
+            keyCooldowns.set(apiKey, Date.now() + cooldownMs);
+            console.warn(`[Gemini] Key ${apiKey.slice(0, 6)}... rate limited (${isQuota ? 'Quota' : 'Rate'}). Cooldown: ${cooldownMs/1000}s.`);
+          }
+          
+          keysInUse.set(apiKey, Math.max(0, (keysInUse.get(apiKey) || 0) - 1));
           
           // Check if any other keys are available right now
-          const otherKeysAvailable = allGeminiKeys.some(k => !failedKeys.has(k) && !keysInUse.has(k) && (keyCooldowns.get(k) || 0) <= Date.now());
+          const otherKeysAvailable = allGeminiKeys.some(k => !failedKeys.has(k) && (keysInUse.get(k) || 0) === 0 && (keyCooldowns.get(k) || 0) <= Date.now());
           
           if (!otherKeysAvailable) {
-            const backoff = Math.min(10000, 1000 * Math.pow(1.5, i));
-            const jitter = Math.random() * 1000;
+            // All keys are rate limited or failed, apply a small backoff before trying again
+            const backoff = Math.min(20000, 2000 * Math.pow(1.5, i));
+            const jitter = Math.random() * 3000;
             console.log(`[Gemini] No other keys available. Backing off for ${Math.round(backoff + jitter)}ms...`);
             geminiSemaphore.release();
             released = true;
             await new Promise(resolve => setTimeout(resolve, backoff + jitter));
           } else {
+            // Switch immediately!
             console.log(`[Gemini] Switching to another key immediately...`);
             geminiSemaphore.release();
             released = true;
@@ -262,7 +298,7 @@ async function withRetry<T>(fn: (ai: GoogleGenAI) => Promise<T>, retries = 50): 
             keyCooldowns.set(apiKey, Date.now() + 5000);
           }
           
-          keysInUse.delete(apiKey);
+          keysInUse.set(apiKey, Math.max(0, (keysInUse.get(apiKey) || 0) - 1));
           const backoff = Math.min(30000, 1000 * Math.pow(2, i));
           const jitter = Math.random() * 1000;
           console.warn(`[Gemini] Transient error (${status}) with key ${apiKey.slice(0, 6)}...: ${message}. Retrying in ${Math.round(backoff + jitter)}ms...`);
@@ -275,7 +311,7 @@ async function withRetry<T>(fn: (ai: GoogleGenAI) => Promise<T>, retries = 50): 
 
         if (isSafetyError) {
           console.error(`[Gemini] Request blocked by safety filters with key ${apiKey.slice(0, 6)}...: ${message}`);
-          keysInUse.delete(apiKey);
+          keysInUse.set(apiKey, Math.max(0, (keysInUse.get(apiKey) || 0) - 1));
           if (i >= 2) throw error; 
           geminiSemaphore.release();
           released = true;
@@ -283,7 +319,7 @@ async function withRetry<T>(fn: (ai: GoogleGenAI) => Promise<T>, retries = 50): 
         }
         
         if (i < retries - 1) {
-          keysInUse.delete(apiKey);
+          keysInUse.set(apiKey, Math.max(0, (keysInUse.get(apiKey) || 0) - 1));
           const backoff = Math.min(30000, 1000 * Math.pow(2, i));
           const jitter = Math.random() * 1000;
           console.warn(`[Gemini] Other error (${status}) with key ${apiKey.slice(0, 6)}...: ${message}. Retrying in ${Math.round(backoff + jitter)}ms...`);
@@ -293,10 +329,12 @@ async function withRetry<T>(fn: (ai: GoogleGenAI) => Promise<T>, retries = 50): 
           await new Promise(resolve => setTimeout(resolve, backoff + jitter));
           continue;
         }
-        keysInUse.delete(apiKey);
+        keysInUse.set(apiKey, Math.max(0, (keysInUse.get(apiKey) || 0) - 1));
         throw error;
       } finally {
-        keysInUse.delete(apiKey);
+        if (!released && apiKey) {
+          keysInUse.set(apiKey, Math.max(0, (keysInUse.get(apiKey) || 0) - 1));
+        }
       }
     } finally {
       if (!released) {
@@ -309,12 +347,19 @@ async function withRetry<T>(fn: (ai: GoogleGenAI) => Promise<T>, retries = 50): 
 }
 
 export async function embedText(text: string): Promise<number[]> {
+  const results = await embedTexts([text]);
+  return results[0];
+}
+
+export async function embedTexts(texts: string[]): Promise<number[][]> {
+  if (texts.length === 0) return [];
+  
   return withRetry(async (ai) => {
     const response = await ai.models.embedContent({
       model: 'gemini-embedding-2-preview',
-      contents: [text],
+      contents: texts,
     });
-    return response.embeddings[0].values;
+    return response.embeddings.map(e => e.values);
   });
 }
 
@@ -365,6 +410,21 @@ function sanitizeJSON(text: string): string {
 }
 
 export async function generateJSON<T>(prompt: string, systemInstruction?: string, model: string = "gemini-3-flash-preview"): Promise<T> {
+  const geminiStatus = getGeminiStatus();
+  const dsStatus = getDSStatus();
+
+  // 1. Try DeepSeek first as preferred provider
+  if (dsStatus.available > 0) {
+    console.log("[LLM] Using DeepSeek (preferred)...");
+    try {
+      return await generateDeepSeekJSON<T>(prompt, systemInstruction);
+    } catch (e) {
+      console.error("[LLM] DeepSeek failed, falling back to Gemini:", e);
+      // Continue to Gemini if DeepSeek fails
+    }
+  }
+
+  // 2. Fallback to Gemini
   try {
     const text = await withRetry(async (ai) => {
       const response = await ai.models.generateContent({
@@ -394,17 +454,40 @@ export async function generateJSON<T>(prompt: string, systemInstruction?: string
       console.warn(`Pro model rate limited, falling back to Flash for JSON generation...`);
       return generateJSON<T>(prompt, systemInstruction, "gemini-3-flash-preview");
     }
+
     throw error;
   }
 }
 
 export async function generateText(prompt: string, systemInstruction?: string): Promise<string> {
-  return withRetry(async (ai) => {
-    const response = await ai.models.generateContent({
-      model: "gemini-3-flash-preview",
-      contents: prompt,
-      config: { systemInstruction },
+  const geminiStatus = getGeminiStatus();
+  const dsStatus = getDSStatus();
+
+  // 1. Try DeepSeek first as preferred provider
+  if (dsStatus.available > 0) {
+    console.log("[LLM] Using DeepSeek (preferred)...");
+    try {
+      const result = await generateDeepSeekJSON<{ response: string }>(
+        prompt + "\n\nReturn your response in a JSON object with a 'response' key.",
+        systemInstruction
+      );
+      return result.response;
+    } catch (e) {
+      console.error("[LLM] DeepSeek text failed, falling back to Gemini:", e);
+    }
+  }
+
+  // 2. Fallback to Gemini
+  try {
+    return await withRetry(async (ai) => {
+      const response = await ai.models.generateContent({
+        model: "gemini-3-flash-preview",
+        contents: prompt,
+        config: { systemInstruction },
+      });
+      return response.text || "";
     });
-    return response.text || "";
-  });
+  } catch (error) {
+    throw error;
+  }
 }

@@ -31,6 +31,29 @@ export default defineConfig(({mode}) => {
             return acc;
           }, [] as string[])
       ),
+      'import.meta.env.VITE_DEEPSEEK_KEYS': JSON.stringify(
+        Object.keys(env)
+          .filter(key => 
+            key === 'DEEPSEEK_API_KEY' || 
+            key === 'VITE_DEEPSEEK_API_KEY' ||
+            key.startsWith('DEEPSEEK_API_KEY_') ||
+            key.startsWith('VITE_DEEPSEEK_API_KEY_') ||
+            key === 'VITE_DEEPSEEK_KEYS' ||
+            key === 'DEEPSEEK_KEYS'
+          )
+          .reduce((acc, key) => {
+            const val = env[key];
+            if (val && typeof val === 'string' && val.length > 10 && !val.includes("TODO")) {
+              // Handle comma-separated strings
+              if (val.includes(',')) {
+                acc.push(...val.split(',').map(k => k.trim()).filter(k => k.length > 10));
+              } else {
+                acc.push(val.trim());
+              }
+            }
+            return acc;
+          }, [] as string[])
+      ),
     },
     resolve: {
       alias: {

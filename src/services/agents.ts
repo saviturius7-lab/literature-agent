@@ -15,7 +15,7 @@ import {
   GapIdentification,
   FactualityResult
 } from "../types";
-import { generateJSON, embedText } from "./gemini";
+import { generateJSON, embedText, embedTexts } from "./gemini";
 import { vectorStore } from "./vectorStore";
 
 const parser = new XMLParser();
@@ -257,23 +257,31 @@ export const LiteratureAgent = {
 };
 
 export const KeyFindingsAgent = {
-  async extractPaperFindings(paper: Paper): Promise<string[]> {
-    const prompt = `Extract 2-3 key findings or conclusions from the following research paper summary.
+  async extractBatchFindings(papers: Paper[]): Promise<{ id: string; findings: string[] }[]> {
+    if (papers.length === 0) return [];
+    
+    const prompt = `Extract 2-3 key findings or conclusions for each of the following research papers.
     Keep each finding concise and technically accurate.
     
-    Title: ${paper.title}
-    Summary: ${paper.summary}
+    Papers:
+    ${papers.map((p, i) => `[Paper ${i}] Title: ${p.title}\nSummary: ${p.summary.slice(0, 500)}...`).join("\n\n")}
     
-    Return a JSON object:
+    Return a JSON object with an array of findings for each paper index:
     {
-      "keyFindings": ["Finding 1", "Finding 2"]
+      "results": [
+        { "index": 0, "keyFindings": ["Finding 1", "Finding 2"] },
+        ...
+      ]
     }`;
 
     try {
-      const result = await generateJSON<{ keyFindings: string[] }>(prompt, "You are an expert at summarizing complex research papers into concise key findings.");
-      return result.keyFindings || [];
+      const result = await generateJSON<{ results: { index: number; keyFindings: string[] }[] }>(prompt, "You are an expert at summarizing complex research papers into concise key findings.");
+      return (result.results || []).map(r => ({
+        id: papers[r.index]?.title || `paper-${r.index}`,
+        findings: r.keyFindings || []
+      }));
     } catch (e) {
-      console.error(`Failed to extract findings for ${paper.title}:`, e);
+      console.error(`Batch findings extraction failed:`, e);
       return [];
     }
   },
@@ -281,14 +289,28 @@ export const KeyFindingsAgent = {
   async extract(papers: Paper[], onProgress?: (msg: string) => void): Promise<Paper[]> {
     if (papers.length === 0) return [];
 
-    onProgress?.(`Extracting key findings for ${papers.length} papers in parallel...`);
+    onProgress?.(`Extracting key findings for ${papers.length} papers in batches...`);
     
-    const enrichedPapers = await Promise.all(
-      papers.map(async (paper) => {
-        const findings = await this.extractPaperFindings(paper);
-        return { ...paper, keyFindings: findings };
-      })
-    );
+    const batchSize = 10;
+    const enrichedPapers: Paper[] = [...papers];
+    
+    for (let i = 0; i < papers.length; i += batchSize) {
+      const batch = papers.slice(i, i + batchSize);
+      const batchResults = await this.extractBatchFindings(batch);
+      
+      // Map results back to papers
+      batchResults.forEach((res, idx) => {
+        const paperIdx = i + idx;
+        if (enrichedPapers[paperIdx]) {
+          enrichedPapers[paperIdx].keyFindings = res.findings;
+        }
+      });
+      
+      if (i + batchSize < papers.length) {
+        onProgress?.(`Extracted findings for ${Math.min(i + batchSize, papers.length)}/${papers.length} papers...`);
+        await new Promise(resolve => setTimeout(resolve, 500)); // Small delay between batches
+      }
+    }
     
     return enrichedPapers;
   }
@@ -366,61 +388,95 @@ export const ChunkingAgent = {
 };
 
 export const TopicRelevanceAgent = {
-  async isRelevant(topic: string, paper: Paper): Promise<boolean> {
-    const prompt = `Evaluate the relevance of the following research paper to the topic: "${topic}".
-    Determine if it is directly relevant or highly related.
+  async filterBatchRelevance(topic: string, papers: Paper[]): Promise<boolean[]> {
+    if (papers.length === 0) return [];
     
-    Title: ${paper.title}
-    Summary: ${paper.summary.slice(0, 500)}...
+    const prompt = `Evaluate the relevance of the following research papers to the topic: "${topic}".
+    Determine if each paper is directly relevant or highly related.
     
-    Return a JSON object:
+    Papers:
+    ${papers.map((p, i) => `[Paper ${i}] Title: ${p.title}\nSummary: ${p.summary.slice(0, 400)}...`).join("\n\n")}
+    
+    Return a JSON object with a boolean for each paper index:
     {
-      "isRelevant": boolean
+      "relevance": [
+        { "index": 0, "isRelevant": boolean },
+        ...
+      ]
     }`;
 
     try {
-      const result = await generateJSON<{ isRelevant: boolean }>(prompt, "You are a strict academic reviewer who filters out irrelevant search results.");
-      return !!result.isRelevant;
+      const result = await generateJSON<{ relevance: { index: number; isRelevant: boolean }[] }>(prompt, "You are a strict academic reviewer who filters out irrelevant search results.");
+      const relevanceMap = new Array(papers.length).fill(true); // Default to true on partial failure
+      (result.relevance || []).forEach(r => {
+        if (r.index >= 0 && r.index < papers.length) {
+          relevanceMap[r.index] = !!r.isRelevant;
+        }
+      });
+      return relevanceMap;
     } catch (e) {
-      console.error(`Relevance check failed for ${paper.title}:`, e);
-      return true; // Default to true on error to avoid losing potential papers
+      console.error(`Batch relevance check failed:`, e);
+      return new Array(papers.length).fill(true);
     }
   },
 
   async filterRelevantPapers(topic: string, papers: Paper[], onProgress?: (msg: string) => void): Promise<Paper[]> {
     if (papers.length === 0) return [];
 
-    onProgress?.(`Filtering ${papers.length} papers for relevance in parallel...`);
+    onProgress?.(`Filtering ${papers.length} papers for relevance in batches...`);
     
-    const relevanceResults = await Promise.all(
-      papers.map(async (paper) => {
-        const relevant = await this.isRelevant(topic, paper);
-        return { paper, relevant };
-      })
-    );
+    const batchSize = 15;
+    const relevantPapers: Paper[] = [];
+    
+    for (let i = 0; i < papers.length; i += batchSize) {
+      const batch = papers.slice(i, i + batchSize);
+      const relevanceResults = await this.filterBatchRelevance(topic, batch);
+      
+      relevanceResults.forEach((isRelevant, idx) => {
+        if (isRelevant) {
+          relevantPapers.push(batch[idx]);
+        }
+      });
+      
+      if (i + batchSize < papers.length) {
+        await new Promise(resolve => setTimeout(resolve, 500));
+      }
+    }
 
-    return relevanceResults.filter(r => r.relevant).map(r => r.paper);
+    return relevantPapers;
   }
 };
 
 export const CitationVerificationAgent = {
-  async checkConsistency(topic: string, paper: Paper): Promise<boolean> {
-    const prompt = `Verify that the following paper is REAL and RELEVANT to the topic: "${topic}".
-    Check if the title and summary make sense and are not hallucinations.
+  async checkBatchConsistency(topic: string, papers: Paper[]): Promise<boolean[]> {
+    if (papers.length === 0) return [];
     
-    Title: ${paper.title}
-    Summary: ${paper.summary.slice(0, 300)}...
+    const prompt = `Verify that the following papers are REAL and RELEVANT to the topic: "${topic}".
+    Check if the titles and summaries make sense and are not hallucinations.
     
-    Return a JSON object:
+    Papers:
+    ${papers.map((p, i) => `[Paper ${i}] Title: ${p.title}\nSummary: ${p.summary.slice(0, 300)}...`).join("\n\n")}
+    
+    Return a JSON object with a boolean for each paper index:
     {
-      "isConsistent": boolean
+      "consistency": [
+        { "index": 0, "isConsistent": boolean },
+        ...
+      ]
     }`;
 
     try {
-      const result = await generateJSON<{ isConsistent: boolean }>(prompt, "You are a meticulous academic auditor who detects hallucinations.");
-      return !!result.isConsistent;
+      const result = await generateJSON<{ consistency: { index: number; isConsistent: boolean }[] }>(prompt, "You are a meticulous academic auditor who detects hallucinations.");
+      const consistencyMap = new Array(papers.length).fill(true);
+      (result.consistency || []).forEach(r => {
+        if (r.index >= 0 && r.index < papers.length) {
+          consistencyMap[r.index] = !!r.isConsistent;
+        }
+      });
+      return consistencyMap;
     } catch (e) {
-      return true;
+      console.error(`Batch consistency check failed:`, e);
+      return new Array(papers.length).fill(true);
     }
   },
 
@@ -507,40 +563,45 @@ export const CitationVerificationAgent = {
   },
 
   async verify(papers: Paper[], topic: string, onProgress?: (msg: string) => void): Promise<{ verifiedPapers: Paper[]; issues: string[] }> {
-    onProgress?.(`Verifying ${papers.length} papers (Consistency + Real-world DBs) in parallel...`);
+    onProgress?.(`Verifying ${papers.length} papers (Consistency + Real-world DBs) in batches...`);
     
     const issues: string[] = [];
+    const batchSize = 10;
+    const verifiedResults: Paper[] = [];
     
-    // We verify in parallel for speed
-    const verificationResults = await Promise.all(
-      papers.map(async (paper) => {
-        // Run LLM check and OpenAlex check in parallel for this specific paper
-        const [llmVerified, realWorldVerified] = await Promise.all([
-          this.checkConsistency(topic, paper),
-          this.verifyWithOpenAlex(paper.title, paper.authors)
-        ]);
-        
-        // If it's from arXiv (has a link), we give it more benefit of the doubt
-        const isArxiv = paper.link && paper.link.includes('arxiv.org');
-        
-        // Final verification logic: 
-        // - If real-world verified, it's definitely verified.
-        // - If it's from arXiv AND LLM verified, we consider it verified even if OpenAlex is missing it (OpenAlex can be slow to index).
-        const verified = realWorldVerified || (isArxiv && llmVerified);
-        
-        if (!verified) {
-          issues.push(`Could not fully verify existence of paper: "${paper.title}"`);
-        }
-        
-        return { 
-          ...paper, 
-          verified 
-        };
-      })
-    );
+    for (let i = 0; i < papers.length; i += batchSize) {
+      const batch = papers.slice(i, i + batchSize);
+      
+      // Batch LLM consistency check
+      const consistencyResults = await this.checkBatchConsistency(topic, batch);
+      
+      // OpenAlex check still needs to be per-paper as it's a specific API call, 
+      // but we can parallelize it for the batch.
+      const batchVerified = await Promise.all(
+        batch.map(async (paper, idx) => {
+          const llmVerified = consistencyResults[idx];
+          const realWorldVerified = await this.verifyWithOpenAlex(paper.title, paper.authors);
+          
+          const isArxiv = paper.link && paper.link.includes('arxiv.org');
+          const verified = realWorldVerified || (isArxiv && llmVerified);
+          
+          if (!verified) {
+            issues.push(`Could not fully verify existence of paper: "${paper.title}"`);
+          }
+          
+          return { ...paper, verified };
+        })
+      );
+      
+      verifiedResults.push(...batchVerified);
+      
+      if (i + batchSize < papers.length) {
+        await new Promise(resolve => setTimeout(resolve, 500));
+      }
+    }
     
     return {
-      verifiedPapers: verificationResults,
+      verifiedPapers: verifiedResults,
       issues
     };
   }
@@ -686,18 +747,21 @@ export const HypothesisAgent = {
 
 export const NoveltyCheckerAgent = {
   async checkNovelty(hypothesis: Hypothesis, papers: Paper[], attempt: number = 0): Promise<{ isNovel: boolean; similarity: number; mostSimilarPaper?: string; feedback?: string }> {
-    const hypothesisEmbedding = await embedText(`${hypothesis.title} ${hypothesis.description}`);
+    const [hypothesisEmbedding, ...paperEmbeddings] = await embedTexts([
+      `${hypothesis.title} ${hypothesis.description}`,
+      ...papers.map(p => `${p.title} ${p.summary}`)
+    ]);
+    
     let maxSimilarity = -1;
     let mostSimilarPaper = "";
 
-    for (const paper of papers) {
-      const paperEmbedding = await embedText(`${paper.title} ${paper.summary}`);
+    paperEmbeddings.forEach((paperEmbedding, idx) => {
       const similarity = cosineSimilarity(hypothesisEmbedding, paperEmbedding);
       if (similarity > maxSimilarity) {
         maxSimilarity = similarity;
-        mostSimilarPaper = paper.title;
+        mostSimilarPaper = papers[idx].title;
       }
-    }
+    });
 
     // Adaptive threshold: starts at 0.85, increases by 0.02 per attempt up to 0.93
     const threshold = Math.min(0.93, 0.85 + (attempt * 0.02));
@@ -735,7 +799,7 @@ export const ContributionAgent = {
     }`;
     
     const result = await generateJSON<{ contributions: Contribution[] }>(prompt, "You are a senior research lead at a top AI lab.");
-    const contributions = result.contributions || [];
+    const contributions = Array.isArray(result.contributions) ? result.contributions : [];
     if (contributions.length < 2) {
       throw new Error("Failed to generate at least 2 concrete contributions.");
     }
@@ -764,8 +828,8 @@ export const MathFormalizerAgent = {
     const result = await generateJSON<MathFormalization>(prompt, "You are a world-class theoretical computer scientist and mathematician.");
     return {
       ...result,
-      notation: result.notation || [],
-      algorithmSteps: result.algorithmSteps || []
+      notation: Array.isArray(result.notation) ? result.notation : [],
+      algorithmSteps: Array.isArray(result.algorithmSteps) ? result.algorithmSteps : []
     };
   }
 };
@@ -794,9 +858,9 @@ export const ExperimentDesignAgent = {
     const result = await generateJSON<ExperimentPlan>(prompt, "You are an expert in experimental design and ML evaluation.");
     return {
       ...result,
-      datasets: result.datasets || [],
-      baselines: result.baselines || [],
-      metrics: result.metrics || []
+      datasets: Array.isArray(result.datasets) ? result.datasets : [],
+      baselines: Array.isArray(result.baselines) ? result.baselines : [],
+      metrics: Array.isArray(result.metrics) ? result.metrics : []
     };
   }
 };
@@ -866,7 +930,7 @@ export const ResultValidationAgent = {
     
     Hypothesis: ${hypothesis.description}
     Results: Accuracy ${result.accuracy.toFixed(2)}, F1 ${result.f1Score.toFixed(2)}
-    Baselines: ${result.baselines.map(b => `${b.name}: ${b.accuracy.toFixed(2)}`).join(", ")}
+    Baselines: ${(Array.isArray(result.baselines) ? result.baselines : []).map(b => `${b.name}: ${b.accuracy.toFixed(2)}`).join(", ")}
     
     Does the data support the hypothesis? Is the improvement over baselines significant?
     
@@ -906,10 +970,10 @@ export const ReviewerSimulatorAgent = {
     }`;
     
     const resultJson = await generateJSON<{ critiques: ReviewerCritique[] }>(prompt, "You are a panel of elite peer reviewers for ICML/NeurIPS.");
-    const critiques = resultJson.critiques || [];
+    const critiques = Array.isArray(resultJson.critiques) ? resultJson.critiques : [];
     return critiques.map(c => ({
       ...c,
-      weaknesses: c.weaknesses || []
+      weaknesses: Array.isArray(c.weaknesses) ? c.weaknesses : []
     }));
   }
 };
@@ -982,12 +1046,12 @@ export const ReportAgent = {
     Dataset Size: ${datasetCard.size}
     Dataset Source: ${datasetCard.source}
     Results: Accuracy ${result.accuracy.toFixed(2)}, F1 ${result.f1Score.toFixed(2)}
-    Baselines: ${result.baselines.map(b => `${b.name} (${b.accuracy.toFixed(2)})`).join(", ")}
-    Ablations: ${result.ablationStudies.map(a => `${a.componentRemoved} (-${a.impactOnMetric.toFixed(2)})`).join(", ")}
-    Failure Cases: ${result.failureCases.map(f => f.example).join("; ")}
+    Baselines: ${(Array.isArray(result.baselines) ? result.baselines : []).map(b => `${b.name} (${b.accuracy.toFixed(2)})`).join(", ")}
+    Ablations: ${(Array.isArray(result.ablationStudies) ? result.ablationStudies : []).map(a => `${a.componentRemoved} (-${a.impactOnMetric.toFixed(2)})`).join(", ")}
+    Failure Cases: ${(Array.isArray(result.failureCases) ? result.failureCases : []).map(f => f.example).join("; ")}
     Implementation Details: ${result.implementationDetails}
     Experiment Logs (Evidence):
-    ${result.logs.join("\n")}
+    ${(Array.isArray(result.logs) ? result.logs : []).join("\n")}
     Reviewer Feedback: ${critiques.map(c => c.weaknesses.join(", ")).join("; ")}
     
     You MUST include:
