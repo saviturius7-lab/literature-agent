@@ -7,7 +7,7 @@ import { ConfusionMatrix } from 'ml-confusion-matrix';
 
 const app = express();
 app.use(express.json());
-const PORT = 3000;
+const PORT = process.env.PORT ? parseInt(process.env.PORT) : 5000;
 
 // API Proxy for arXiv to bypass CORS
 app.get("/api/arxiv", async (req, res) => {
