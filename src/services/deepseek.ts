@@ -3,61 +3,33 @@
  * Collects and rotates through DeepSeek API keys for fallback support.
  */
 
+// Helper to collect keys injected by vite.config.ts at build time
 function collectDeepSeekKeys(): string[] {
-  const collected: string[] = [];
-  
-  // 1. Check for the bulk VITE_DEEPSEEK_KEYS provided by vite.config.ts
-  const bulkKeys = (import.meta as any).env.VITE_DEEPSEEK_KEYS;
-  if (bulkKeys) {
-    if (Array.isArray(bulkKeys)) {
-      collected.push(...bulkKeys.filter(k => typeof k === 'string' && k.trim()));
-    } else if (typeof bulkKeys === 'string') {
-      try {
-        const parsed = JSON.parse(bulkKeys);
-        if (Array.isArray(parsed)) {
-          collected.push(...parsed.filter(k => typeof k === 'string' && k.trim()));
-        } else {
-          collected.push(bulkKeys.trim());
-        }
-      } catch (e) {
-        const split = bulkKeys.split(',').map(k => k.trim()).filter(k => k);
-        collected.push(...split);
+  // VITE_DEEPSEEK_KEYS is a JSON array injected by vite.config.ts from all
+  // DEEPSEEK_API_KEY* and VITE_DEEPSEEK_API_KEY* environment variables / Replit secrets.
+  const injected = (import.meta as any).env.VITE_DEEPSEEK_KEYS;
+  let keys: string[] = [];
+
+  if (Array.isArray(injected)) {
+    keys = injected.filter((k: unknown) => typeof k === 'string' && (k as string).trim().length > 10);
+  } else if (typeof injected === 'string' && injected.length > 2) {
+    try {
+      const parsed = JSON.parse(injected);
+      if (Array.isArray(parsed)) {
+        keys = parsed.filter((k: unknown) => typeof k === 'string' && (k as string).trim().length > 10);
       }
+    } catch {
+      keys = injected.split(',').map(k => k.trim()).filter(k => k.length > 10);
     }
   }
 
-  // 2. Fallback to individual keys (Vite static access)
-  const primaryKey = (import.meta as any).env.VITE_DEEPSEEK_API_KEY;
-  if (primaryKey && primaryKey.trim() && !primaryKey.includes("TODO")) {
-    collected.push(primaryKey.trim());
-  }
-
-  // 3. Check for DEEPSEEK_KEYS (common alias)
-  const dsBulkKeys = (import.meta as any).env.DEEPSEEK_KEYS;
-  if (dsBulkKeys) {
-    if (Array.isArray(dsBulkKeys)) {
-      collected.push(...dsBulkKeys.filter(k => typeof k === 'string' && k.trim()));
-    } else if (typeof dsBulkKeys === 'string') {
-      try {
-        const parsed = JSON.parse(dsBulkKeys);
-        if (Array.isArray(parsed)) {
-          collected.push(...parsed.filter(k => typeof k === 'string' && k.trim()));
-        }
-      } catch (e) {
-        const split = dsBulkKeys.split(',').map(k => k.trim()).filter(k => k);
-        collected.push(...split);
-      }
-    }
-  }
-  
-  const uniqueKeys = Array.from(new Set(collected)).filter(k => k && k.length > 10 && !k.includes("TODO"));
-  if (uniqueKeys.length > 0) {
-    console.log(`[DeepSeek] Collected ${uniqueKeys.length} unique API keys for rotation.`);
-    console.log(`[DeepSeek] Key prefixes: ${uniqueKeys.map(k => k.slice(0, 6)).join(', ')}`);
+  const unique = Array.from(new Set(keys));
+  if (unique.length > 0) {
+    console.log(`[DeepSeek] ${unique.length} API key(s) ready for rotation.`);
   } else {
-    console.warn(`[DeepSeek] NO DEEPSEEK API KEYS COLLECTED!`);
+    console.warn('[DeepSeek] No API keys found. Add DEEPSEEK_API_KEY to Replit Secrets (optional).');
   }
-  return uniqueKeys;
+  return unique;
 }
 
 export const allDeepSeekKeys = collectDeepSeekKeys();
