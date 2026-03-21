@@ -61,7 +61,17 @@ function collectKeys(): string[] {
     }
   } catch (e) { /* ignore */ }
 
-  const uniqueKeys = Array.from(new Set(collected)).filter(k => k && k.length > 10);
+  const uniqueKeys = Array.from(new Set(collected)).filter(k => {
+    if (!k || typeof k !== 'string' || k.length < 10) return false;
+    const upper = k.toUpperCase();
+    if (upper.includes("TODO")) return false;
+    if (upper.includes("YOUR_API_KEY")) return false;
+    if (upper.includes("MY_GEMINI_KEY")) return false;
+    if (upper.includes("GEMINI_API_KEY")) return false;
+    if (upper.includes("INSERT_KEY")) return false;
+    if (upper.includes("REPLACE_WITH")) return false;
+    return true;
+  });
   console.log(`[Gemini] Collected ${uniqueKeys.length} unique API keys for rotation.`);
   if (uniqueKeys.length > 0) {
     console.log(`[Gemini] Key prefixes: ${uniqueKeys.map(k => k.slice(0, 6)).join(', ')}`);
@@ -118,7 +128,7 @@ class Semaphore {
 
 // Limit concurrent calls to a reasonable number to avoid overwhelming the API
 // and triggering "Quota Exceeded" errors due to bursts.
-const MAX_CONCURRENCY = 8;
+const MAX_CONCURRENCY = 4;
 const geminiSemaphore = new Semaphore(MAX_CONCURRENCY);
 
 // Track keys currently performing a request to ensure even distribution
@@ -263,7 +273,14 @@ async function withRetry<T>(fn: (ai: GoogleGenAI) => Promise<T>, retries = 50): 
             // Use a 5-minute cooldown for hard quota
             const longCooldownMs = 5 * 60 * 1000; 
             keyCooldowns.set(apiKey, Date.now() + longCooldownMs);
-            console.error(`[Gemini] Key ${apiKey.slice(0, 6)}... reached hard quota (billing/plan). Cooling down for 5m.`);
+            
+            // Only log as error if we are running low on available keys
+            const status = getGeminiStatus();
+            if (status.available < 2) {
+              console.error(`[Gemini] Key ${apiKey.slice(0, 6)}... reached hard quota (billing/plan). Cooling down for 5m. CRITICAL: Only ${status.available} keys left.`);
+            } else {
+              console.warn(`[Gemini] Key ${apiKey.slice(0, 6)}... reached hard quota. Cooling down. (${status.available} keys still available)`);
+            }
           } else {
             const cooldownMs = isQuota ? 60000 : 15000; 
             keyCooldowns.set(apiKey, Date.now() + cooldownMs);

@@ -50,7 +50,16 @@ function collectDeepSeekKeys(): string[] {
     }
   }
   
-  const uniqueKeys = Array.from(new Set(collected)).filter(k => k && k.length > 10 && !k.includes("TODO"));
+  const uniqueKeys = Array.from(new Set(collected)).filter(k => {
+    if (!k || typeof k !== 'string' || k.length < 10) return false;
+    const upper = k.toUpperCase();
+    if (upper.includes("TODO")) return false;
+    if (upper.includes("YOUR_API_KEY")) return false;
+    if (upper.includes("DEEPSEEK_API_KEY")) return false;
+    if (upper.includes("INSERT_KEY")) return false;
+    if (upper.includes("REPLACE_WITH")) return false;
+    return true;
+  });
   if (uniqueKeys.length > 0) {
     console.log(`[DeepSeek] Collected ${uniqueKeys.length} unique API keys for rotation.`);
     console.log(`[DeepSeek] Key prefixes: ${uniqueKeys.map(k => k.slice(0, 6)).join(', ')}`);

@@ -20,12 +20,24 @@ export default defineConfig(({mode}) => {
           )
           .reduce((acc, key) => {
             const val = env[key];
-            if (val && typeof val === 'string' && val.length > 10 && !val.includes("TODO")) {
-              // Handle comma-separated strings
-              if (val.includes(',')) {
-                acc.push(...val.split(',').map(k => k.trim()).filter(k => k.length > 10));
-              } else {
-                acc.push(val.trim());
+            if (val && typeof val === 'string' && val.length > 10) {
+              const upper = val.toUpperCase();
+              const isPlaceholder = 
+                upper.includes("TODO") || 
+                upper.includes("YOUR_API_KEY") || 
+                upper.includes("MY_GEMINI_KEY") || 
+                upper.includes("GEMINI_API_KEY") || 
+                upper.includes("INSERT_KEY") || 
+                upper.includes("REPLACE_WITH") ||
+                upper.includes("EXAMPLE_KEY");
+              
+              if (!isPlaceholder) {
+                // Handle comma-separated strings
+                if (val.includes(',')) {
+                  acc.push(...val.split(',').map(k => k.trim()).filter(k => k.length > 10));
+                } else {
+                  acc.push(val.trim());
+                }
               }
             }
             return acc;
@@ -43,12 +55,23 @@ export default defineConfig(({mode}) => {
           )
           .reduce((acc, key) => {
             const val = env[key];
-            if (val && typeof val === 'string' && val.length > 10 && !val.includes("TODO")) {
-              // Handle comma-separated strings
-              if (val.includes(',')) {
-                acc.push(...val.split(',').map(k => k.trim()).filter(k => k.length > 10));
-              } else {
-                acc.push(val.trim());
+            if (val && typeof val === 'string' && val.length > 10) {
+              const upper = val.toUpperCase();
+              const isPlaceholder = 
+                upper.includes("TODO") || 
+                upper.includes("YOUR_API_KEY") || 
+                upper.includes("DEEPSEEK_API_KEY") || 
+                upper.includes("INSERT_KEY") || 
+                upper.includes("REPLACE_WITH") ||
+                upper.includes("EXAMPLE_KEY");
+
+              if (!isPlaceholder) {
+                // Handle comma-separated strings
+                if (val.includes(',')) {
+                  acc.push(...val.split(',').map(k => k.trim()).filter(k => k.length > 10));
+                } else {
+                  acc.push(val.trim());
+                }
               }
             }
             return acc;
