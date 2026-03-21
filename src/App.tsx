@@ -60,7 +60,6 @@ import {
   SearchQueryAgent,
   LiteratureAgent, 
   SelectionAgent,
-  CitationVerificationAgent,
   GapIdentificationAgent,
   HypothesisAgent, 
   NoveltyCheckerAgent,
@@ -73,10 +72,9 @@ import {
   ReviewerSimulatorAgent,
   RevisionAgent,
   ReportAgent,
-  TopicRelevanceAgent,
   VerificationAgent,
   FactualityEvalAgent,
-  KeyFindingsAgent
+  UnifiedPaperAnalyzerAgent
 } from './services/agents';
 import { getGeminiStatus, resetGeminiStatus } from './services/gemini';
 import { getDeepSeekStatus, resetDeepSeekStatus } from './services/deepseek';
@@ -184,46 +182,27 @@ export default function App() {
           throw new Error(`No papers found for "${refinedTopic}" or "${inputTopic}" on arXiv. This can happen if the topic is too niche or the search query is too specific. Try a broader research topic.`);
         }
 
-        // 2a. Topic Relevance Agent
-        setState(prev => ({ ...prev, status: 'filtering_relevance' }));
-        const relevantPapers = await TopicRelevanceAgent.filterRelevantPapers(refinedTopic, rawPapers);
-        await stepDelay();
-        
-        // 3. Citation Verification
+        // 3. Unified Analysis (Relevance + Consistency + Verification + Findings)
         setState(prev => ({ ...prev, status: 'verifying_citations' }));
-        setSearchingProgress('Verifying citations against real-world databases...');
-        const { verifiedPapers, issues } = await CitationVerificationAgent.verify(relevantPapers.length > 0 ? relevantPapers : rawPapers, refinedTopic, (msg) => setSearchingProgress(msg));
+        const trulyVerified = await UnifiedPaperAnalyzerAgent.analyze(refinedTopic, rawPapers, (msg) => setSearchingProgress(msg));
         await stepDelay();
-        
-        // Enrich with key findings (batch enrichment)
-        setState(prev => ({ ...prev, status: 'extracting_findings' }));
-        const enrichedPapers = await KeyFindingsAgent.extract(verifiedPapers);
-        await stepDelay();
-        
-        // We keep all papers in the state for visibility, but only use verified ones for the pipeline
-        const trulyVerified = verifiedPapers.filter(p => p.verified !== false);
         
         if (trulyVerified.length === 0) {
-          // If no papers verified, and we haven't tried a broad fallback yet, try one more time
+          // If no papers verified, try a broad fallback
           if (currentIteration === 1) {
             console.warn("No papers verified. Retrying with broad search...");
             const broadKeywords = await SearchQueryAgent.getBroadKeywords(refinedTopic);
             await stepDelay();
             const broadPapers = await LiteratureAgent.executeSearch(broadKeywords.join(" "));
             await stepDelay();
-            const broadVerified = await CitationVerificationAgent.verify(broadPapers, refinedTopic);
+            const broadVerified = await UnifiedPaperAnalyzerAgent.analyze(refinedTopic, broadPapers, (msg) => setSearchingProgress(msg));
             await stepDelay();
-            const broadTrulyVerified = broadVerified.verifiedPapers.filter(p => p.verified !== false);
-            
-            if (broadTrulyVerified.length > 0) {
-              verifiedPapers.push(...broadVerified.verifiedPapers);
-              trulyVerified.push(...broadTrulyVerified);
-            }
+            trulyVerified.push(...broadVerified);
           }
         }
 
         if (trulyVerified.length === 0) {
-          throw new Error(`Citation verification failed: No papers could be verified in real-world databases. Issues: ${issues.join(", ")}`);
+          throw new Error(`Citation verification failed: No papers could be verified in real-world databases.`);
         }
 
         // Add verified chunks to vector store for RAG
@@ -239,13 +218,13 @@ export default function App() {
           })));
         }
 
-        // 3b. Selection Agent
+        // 4. Selection Agent
         const papers = await SelectionAgent.selectPapers(refinedTopic, trulyVerified);
         await stepDelay();
-        // We set the state to all enrichedPapers (including flagged ones) for the UI
-        setState(prev => ({ ...prev, status: 'identifying_gaps', papers: enrichedPapers }));
+        // We set the state to all trulyVerified papers for the UI
+        setState(prev => ({ ...prev, status: 'identifying_gaps', papers: trulyVerified }));
 
-        // 4. Gap Identification
+        // 5. Gap Identification
         // But we only use the selected (verified) papers for the next steps
         const gapIdentification = await GapIdentificationAgent.identify(papers, refinedTopic);
         await stepDelay();

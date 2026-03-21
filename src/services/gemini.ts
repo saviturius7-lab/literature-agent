@@ -191,8 +191,8 @@ async function withRetry<T>(fn: (ai: GoogleGenAI) => Promise<T>, retries = 50): 
         
         // If the best key is on a very long cooldown (hard quota), and it's the best we have,
         // we might as well tell the user now instead of making them wait 5+ minutes.
-        if (waitTime > 4 * 60 * 1000) {
-          throw new Error("All available Gemini API keys have reached their hard quota (billing/plan limits). Please wait for the 5-minute cooldown or add a new API key in Settings -> Secrets.");
+        if (waitTime > 4.5 * 60 * 1000) {
+          throw new Error("All available Gemini API keys have reached their hard quota (billing/plan limits). Please wait for the 5-minute cooldown or add more API keys in Settings -> Secrets (VITE_GEMINI_API_KEY_1, _2, etc.).");
         }
         
         // If the best key is still very busy or on a moderate cooldown, wait a bit
@@ -236,9 +236,9 @@ async function withRetry<T>(fn: (ai: GoogleGenAI) => Promise<T>, retries = 50): 
           } catch (e) { /* ignore */ }
         }
         
-        const isRateLimit = status === 429 || message.includes("429") || message.includes("RESOURCE_EXHAUSTED") || message.toLowerCase().includes("quota");
-        const isAuthError = status === 401 || message.includes("401") || message.includes("API_KEY_INVALID");
-        const isTransientError = [500, 503, 504].includes(status) || message.includes("500") || message.includes("503") || message.includes("504") || message.toLowerCase().includes("internal error") || message.toLowerCase().includes("overloaded");
+        const isRateLimit = status === 429 || message.includes("429") || message.includes("RESOURCE_EXHAUSTED") || message.toLowerCase().includes("quota") || message.toLowerCase().includes("rate limit");
+        const isAuthError = status === 401 || message.includes("401") || message.includes("API_KEY_INVALID") || message.toLowerCase().includes("invalid api key");
+        const isTransientError = [500, 502, 503, 504].includes(status) || message.includes("500") || message.includes("502") || message.includes("503") || message.includes("504") || message.toLowerCase().includes("internal error") || message.toLowerCase().includes("overloaded") || message.toLowerCase().includes("bad gateway");
         const isSafetyError = status === 400 && (message.toLowerCase().includes("safety") || message.toLowerCase().includes("blocked"));
 
         if (isAuthError) {
@@ -252,10 +252,15 @@ async function withRetry<T>(fn: (ai: GoogleGenAI) => Promise<T>, retries = 50): 
         
         if (isRateLimit) {
           const isQuota = message.toLowerCase().includes("quota");
-          const isHardQuota = message.toLowerCase().includes("billing") || message.toLowerCase().includes("plan") || message.toLowerCase().includes("daily limit") || message.toLowerCase().includes("budget");
+          const isHardQuota = message.toLowerCase().includes("billing") || 
+                             message.toLowerCase().includes("plan") || 
+                             message.toLowerCase().includes("daily limit") || 
+                             message.toLowerCase().includes("budget") ||
+                             message.toLowerCase().includes("current quota") ||
+                             message.toLowerCase().includes("exceeded your current quota");
           
           if (isHardQuota) {
-            // Use a 5-minute cooldown for hard quota instead of 10
+            // Use a 5-minute cooldown for hard quota
             const longCooldownMs = 5 * 60 * 1000; 
             keyCooldowns.set(apiKey, Date.now() + longCooldownMs);
             console.error(`[Gemini] Key ${apiKey.slice(0, 6)}... reached hard quota (billing/plan). Cooling down for 5m.`);

@@ -81,7 +81,7 @@ export function resetDeepSeekStatus() {
   keyLastUsed.clear();
 }
 
-export async function withDeepSeekRetry<T>(fn: (apiKey: string) => Promise<T>, retries = 3): Promise<T> {
+export async function withDeepSeekRetry<T>(fn: (apiKey: string) => Promise<T>, retries = 5): Promise<T> {
   let lastError: any;
   
   for (let i = 0; i < retries; i++) {
@@ -97,7 +97,9 @@ export async function withDeepSeekRetry<T>(fn: (apiKey: string) => Promise<T>, r
         throw new Error("No DeepSeek API keys found.");
       }
       // Wait a bit if all keys are on cooldown
-      await new Promise(resolve => setTimeout(resolve, 2000));
+      const waitTime = 2000 + (i * 1000);
+      console.warn(`[DeepSeek] All keys on cooldown. Waiting ${waitTime}ms...`);
+      await new Promise(resolve => setTimeout(resolve, waitTime));
       continue;
     }
 
@@ -109,12 +111,15 @@ export async function withDeepSeekRetry<T>(fn: (apiKey: string) => Promise<T>, r
     } catch (error: any) {
       lastError = error;
       const status = error.status || 0;
-      const message = error.message || "";
+      const message = (error.message || "").toLowerCase();
 
-      if (status === 401 || message.includes("401") || message.includes("invalid")) {
+      if (status === 401 || message.includes("401") || message.includes("invalid") || message.includes("auth")) {
+        console.error(`[DeepSeek] Key ${apiKey.slice(0, 6)}... is invalid. Removing.`);
         failedKeys.add(apiKey);
-      } else if (status === 429 || message.includes("429") || message.includes("rate limit")) {
-        keyCooldowns.set(apiKey, Date.now() + 60000);
+      } else if (status === 429 || message.includes("429") || message.includes("rate limit") || message.includes("quota") || message.includes("too many requests")) {
+        const cooldown = 60000 + (i * 30000);
+        console.warn(`[DeepSeek] Key ${apiKey.slice(0, 6)}... rate limited. Cooldown: ${cooldown/1000}s.`);
+        keyCooldowns.set(apiKey, Date.now() + cooldown);
       } else {
         keyCooldowns.set(apiKey, Date.now() + 5000);
       }
