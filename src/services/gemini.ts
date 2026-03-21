@@ -387,48 +387,45 @@ export async function embedTexts(texts: string[]): Promise<number[][]> {
 
 function sanitizeJSON(text: string): string {
   // 1. Remove markdown code blocks
-  let cleaned = text.replace(/```json\n?|```/g, "").trim();
+  const cleaned = text.replace(/```json\n?|```/g, "").trim();
 
   // 2. Fix common JSON issues from LLMs
-  // LLMs often output single backslashes for LaTeX or paths which break JSON.parse
-  // We want to escape backslashes that are NOT part of a valid JSON escape sequence
-  // Valid JSON escapes: \", \\, \/, \b, \f, \n, \r, \t, \uXXXX
-  
-  let result = "";
+  // LLMs often output single backslashes for LaTeX or paths which break JSON.parse.
+  // Build the sanitized output in an array buffer so large responses stay linear-time.
+  const parts: string[] = [];
+
   for (let i = 0; i < cleaned.length; i++) {
     if (cleaned[i] === "\\") {
       const next = cleaned[i + 1];
       if (next === undefined) {
-        result += "\\\\";
+        parts.push("\\\\");
         continue;
       }
-      
+
       // If it's a valid escape, keep it as is
       if (["\"", "\\", "/", "b", "f", "n", "r", "t"].includes(next)) {
-        result += "\\";
-        result += next;
+        parts.push("\\", next);
         i++;
       } else if (next === "u") {
         // Check for \uXXXX
         const hexPart = cleaned.slice(i + 2, i + 6);
         if (hexPart.length === 4 && /[0-9a-fA-F]{4}/.test(hexPart)) {
-          result += "\\u";
-          result += hexPart;
+          parts.push("\\u", hexPart);
           i += 5;
         } else {
           // Invalid unicode escape, escape the backslash
-          result += "\\\\";
+          parts.push("\\\\");
         }
       } else {
         // Not a valid JSON escape sequence (e.g. \theta), escape the backslash
-        result += "\\\\";
+        parts.push("\\\\");
       }
     } else {
-      result += cleaned[i];
+      parts.push(cleaned[i]);
     }
   }
-  
-  return result;
+
+  return parts.join("");
 }
 
 export async function generateJSON<T>(prompt: string, systemInstruction?: string, model: string = "gemini-3-flash-preview"): Promise<T> {
