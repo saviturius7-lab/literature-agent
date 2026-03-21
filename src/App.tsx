@@ -154,7 +154,7 @@ export default function App() {
 
     try {
       // Small delay between steps to avoid hitting rate limits
-      const stepDelay = (ms = 1500) => new Promise(resolve => setTimeout(resolve, ms));
+      const stepDelay = (ms = 500) => new Promise(resolve => setTimeout(resolve, ms));
 
       // Clear vector store for new research
       vectorStore.clear();

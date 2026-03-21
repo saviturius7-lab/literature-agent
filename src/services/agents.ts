@@ -52,58 +52,50 @@ export const TopicRefinementAgent = {
 };
 
 export const SearchQueryAgent = {
-  async generateHypotheticalAbstract(topic: string): Promise<string> {
-    const prompt = `Write a hypothetical, high-quality scientific abstract that would perfectly answer the research question: "${topic}".
-    The abstract should include:
-    1. Background and motivation.
-    2. A novel methodology or approach.
-    3. Key findings and implications.
-    
-    Make it sound like a top-tier AI/ML conference paper (NeurIPS, ICML, ICLR).
-    
-    Return a JSON object:
-    {
-      "hypotheticalAbstract": "The full text of the hypothetical abstract..."
-    }`;
-    
-    const result = await generateJSON<{ hypotheticalAbstract: string }>(prompt, "You are a world-class AI researcher writing a groundbreaking paper.");
-    return result.hypotheticalAbstract || "";
-  },
-
   async refineQuery(topic: string): Promise<string> {
-    // HyDE Implementation: Generate hypothetical abstract first
-    const hypotheticalAbstract = await this.generateHypotheticalAbstract(topic);
-    
-    const prompt = `Based on the following research topic and a hypothetical ideal abstract, generate an optimized search query for the arXiv API.
-    The query should use specific technical keywords found in the abstract to ensure high semantic alignment.
-    Use boolean operators if necessary (AND, OR).
-    Avoid stop words and conversational filler.
-    Keep the query under 10 words for better compatibility.
+    const prompt = `You are a research query optimization expert. Given a research topic, your goal is to generate an optimized search query for the arXiv API.
     
     Topic: "${topic}"
-    Hypothetical Abstract: "${hypotheticalAbstract.slice(0, 500)}..."
     
-    Return a JSON object:
+    First, imagine a hypothetical ideal abstract for a paper that would perfectly address this topic.
+    Then, based on that hypothetical abstract and the topic itself, generate a concise, highly effective search query.
+    
+    The query should use arXiv search syntax if helpful (e.g., ti:title, au:author, abs:abstract, all:all fields).
+    Focus on specific technical terms and keywords.
+    
+    Return your response in this JSON format:
     {
-      "refinedQuery": "optimized search query"
+      "hypotheticalAbstract": "...",
+      "refinedQuery": "..."
     }`;
-    
-    const result = await generateJSON<{ refinedQuery: string }>(prompt, "You are an expert research librarian specializing in academic search optimization and semantic retrieval.");
-    return result.refinedQuery || topic;
+
+    try {
+      const result = await generateJSON<{ hypotheticalAbstract: string; refinedQuery: string }>(prompt, "You are a research query optimization expert.");
+      console.log(`[SearchQueryAgent] Hypothetical Abstract: ${result.hypotheticalAbstract.slice(0, 100)}...`);
+      return result.refinedQuery;
+    } catch (error) {
+      console.error("[SearchQueryAgent] Failed to refine query, using original topic:", error);
+      return topic;
+    }
   },
 
   async getBroadKeywords(topic: string): Promise<string[]> {
-    const prompt = `Extract 3-5 broad, high-level keywords from the following research topic that would be effective for a general search.
+    const prompt = `Generate 5 broad, distinct technical keywords or short phrases related to this research topic that could be used to find relevant papers on arXiv.
     
     Topic: "${topic}"
     
-    Return a JSON object:
+    Return your response in this JSON format:
     {
       "keywords": ["keyword1", "keyword2", ...]
     }`;
-    
-    const result = await generateJSON<{ keywords: string[] }>(prompt, "You are an expert at identifying core research concepts.");
-    return result.keywords || [topic];
+
+    try {
+      const result = await generateJSON<{ keywords: string[] }>(prompt, "You are an expert at identifying core research concepts.");
+      return result.keywords || [topic];
+    } catch (error) {
+      console.error("[SearchQueryAgent] Failed to get broad keywords:", error);
+      return [topic];
+    }
   }
 };
 
@@ -167,45 +159,54 @@ export const LiteratureAgent = {
     };
 
     try {
-      // Strategy 1: Refined Query
-      onProgress?.("Generating optimized search query...");
-      const refinedQuery = await SearchQueryAgent.refineQuery(topic);
-      console.log(`Search Strategy 1 (Refined): "${refinedQuery}"`);
+      // 1. Start Refined Query Generation and Initial Topic Search in parallel
+      onProgress?.("Initializing multi-strategy literature search...");
+      
+      const [refinedQuery, initialTopicPapers] = await Promise.all([
+        SearchQueryAgent.refineQuery(topic),
+        this.executeSearch(topic)
+      ]);
+
+      addPapers(initialTopicPapers);
+      console.log(`Search Strategy (Original Topic): Found ${initialTopicPapers.length} papers`);
+
+      // 2. Execute Refined Search
+      console.log(`Search Strategy (Refined): "${refinedQuery}"`);
       onProgress?.(`Searching ArXiv for: ${refinedQuery}`);
-      addPapers(await this.executeSearch(refinedQuery));
+      const refinedPapers = await this.executeSearch(refinedQuery);
+      addPapers(refinedPapers);
+      console.log(`Search Strategy (Refined): Found ${refinedPapers.length} papers`);
 
-      // Strategy 2: Original Topic
-      if (allPapers.length < 5 && refinedQuery !== topic) {
-        console.log(`Search Strategy 2 (Original): "${topic}"`);
-        onProgress?.(`Searching ArXiv for original topic: ${topic}`);
-        addPapers(await this.executeSearch(topic));
-      }
-
-      // Strategy 3: Broad Keywords
-      if (allPapers.length < 5) {
-        console.log("Search Strategy 3 (Broad Keywords)");
-        onProgress?.("Extracting broad keywords for fallback search...");
+      // 3. Fallback strategies if still low on papers
+      if (allPapers.length < 8) {
+        onProgress?.("Broadening search to find more relevant literature...");
+        
+        // Strategy 3: Broad Keywords (Parallelized)
         const keywords = await SearchQueryAgent.getBroadKeywords(topic);
-        for (const keyword of keywords) {
-          if (allPapers.length >= 12) break;
-          console.log(`Trying keyword: "${keyword}"`);
-          onProgress?.(`Searching ArXiv for keyword: ${keyword}`);
-          addPapers(await this.executeSearch(keyword));
+        const keywordSearches = keywords.map(keyword => {
+          console.log(`Queuing keyword search: "${keyword}"`);
+          return this.executeSearch(keyword);
+        });
+        
+        const keywordResults = await Promise.all(keywordSearches);
+        keywordResults.forEach(results => addPapers(results));
+        
+        // Strategy 4: General AI/ML fallback if still desperate
+        if (allPapers.length < 5) {
+          onProgress?.("Applying general AI/ML fallback search...");
+          const fallbackQueries = ["machine learning", "artificial intelligence", "deep learning"];
+          const fallbackResults = await Promise.all(fallbackQueries.map(q => this.executeSearch(q)));
+          fallbackResults.forEach(results => addPapers(results));
         }
       }
 
-      // Strategy 4: Very Broad Fallback (AI/ML general)
-      if (allPapers.length === 0) {
-        console.log("Search Strategy 4 (Very Broad Fallback)");
-        onProgress?.("Performing broad fallback search (AI/ML general)...");
-        addPapers(await this.executeSearch("artificial intelligence machine learning"));
-      }
+      onProgress?.(`Found ${allPapers.length} unique papers. Starting relevance filtering...`);
+      return allPapers;
     } catch (error) {
-      console.error("LiteratureAgent.fetchPapers error:", error);
-      // Don't throw, return what we have (even if empty) to allow the workflow to handle it
+      console.error("[LiteratureAgent] Error in fetchPapers:", error);
+      onProgress?.("Error during paper retrieval. Proceeding with available results.");
+      return allPapers;
     }
-    
-    return allPapers;
   },
 
   async executeSearch(query: string): Promise<Paper[]> {
@@ -423,12 +424,15 @@ export const TopicRelevanceAgent = {
   async filterRelevantPapers(topic: string, papers: Paper[], onProgress?: (msg: string) => void): Promise<Paper[]> {
     if (papers.length === 0) return [];
 
-    onProgress?.(`Filtering ${papers.length} papers for relevance in batches...`);
+    onProgress?.(`Filtering ${papers.length} papers for relevance...`);
     
     const batchSize = 15;
     const relevantPapers: Paper[] = [];
     
     for (let i = 0; i < papers.length; i += batchSize) {
+      const currentBatchSize = Math.min(batchSize, papers.length - i);
+      onProgress?.(`Analyzing relevance for papers ${i + 1} to ${i + currentBatchSize} of ${papers.length}...`);
+      
       const batch = papers.slice(i, i + batchSize);
       const relevanceResults = await this.filterBatchRelevance(topic, batch);
       
@@ -439,10 +443,11 @@ export const TopicRelevanceAgent = {
       });
       
       if (i + batchSize < papers.length) {
-        await new Promise(resolve => setTimeout(resolve, 500));
+        await new Promise(resolve => setTimeout(resolve, 300));
       }
     }
 
+    onProgress?.(`Relevance filtering complete. ${relevantPapers.length} papers retained.`);
     return relevantPapers;
   }
 };
@@ -563,20 +568,25 @@ export const CitationVerificationAgent = {
   },
 
   async verify(papers: Paper[], topic: string, onProgress?: (msg: string) => void): Promise<{ verifiedPapers: Paper[]; issues: string[] }> {
-    onProgress?.(`Verifying ${papers.length} papers (Consistency + Real-world DBs) in batches...`);
+    onProgress?.(`Starting verification for ${papers.length} papers...`);
     
     const issues: string[] = [];
     const batchSize = 10;
     const verifiedResults: Paper[] = [];
     
     for (let i = 0; i < papers.length; i += batchSize) {
+      const currentBatchSize = Math.min(batchSize, papers.length - i);
+      onProgress?.(`Verifying batch ${Math.floor(i / batchSize) + 1} (${currentBatchSize} papers)...`);
+      
       const batch = papers.slice(i, i + batchSize);
       
       // Batch LLM consistency check
+      onProgress?.(`Checking internal consistency for batch ${Math.floor(i / batchSize) + 1}...`);
       const consistencyResults = await this.checkBatchConsistency(topic, batch);
       
       // OpenAlex check still needs to be per-paper as it's a specific API call, 
       // but we can parallelize it for the batch.
+      onProgress?.(`Validating batch ${Math.floor(i / batchSize) + 1} against OpenAlex database...`);
       const batchVerified = await Promise.all(
         batch.map(async (paper, idx) => {
           const llmVerified = consistencyResults[idx];
@@ -596,10 +606,11 @@ export const CitationVerificationAgent = {
       verifiedResults.push(...batchVerified);
       
       if (i + batchSize < papers.length) {
-        await new Promise(resolve => setTimeout(resolve, 500));
+        await new Promise(resolve => setTimeout(resolve, 300));
       }
     }
     
+    onProgress?.(`Verification complete. Found ${verifiedResults.filter(p => p.verified).length} verified papers.`);
     return {
       verifiedPapers: verifiedResults,
       issues

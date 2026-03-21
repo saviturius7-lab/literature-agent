@@ -1,33 +1,74 @@
 import { GoogleGenAI } from "@google/genai";
 import { generateDeepSeekJSON, getDeepSeekStatus as getDSStatus } from "./deepseek";
 
-// Helper to collect keys injected by vite.config.ts at build time
+// Helper to collect keys from import.meta.env
 function collectKeys(): string[] {
-  // VITE_GEMINI_KEYS is a JSON array injected by vite.config.ts from all
-  // GEMINI_API_KEY* and VITE_GEMINI_API_KEY* environment variables / Replit secrets.
-  const injected = (import.meta as any).env.VITE_GEMINI_KEYS;
-  let keys: string[] = [];
-
-  if (Array.isArray(injected)) {
-    keys = injected.filter((k: unknown) => typeof k === 'string' && k.trim().length > 10);
-  } else if (typeof injected === 'string' && injected.length > 2) {
-    try {
-      const parsed = JSON.parse(injected);
-      if (Array.isArray(parsed)) {
-        keys = parsed.filter((k: unknown) => typeof k === 'string' && (k as string).trim().length > 10);
+  const collected: string[] = [];
+  
+  // 1. Check for the bulk VITE_GEMINI_KEYS provided by vite.config.ts
+  // This is the primary source of keys, including those from AI Studio Secrets
+  const bulkKeys = (import.meta as any).env.VITE_GEMINI_KEYS;
+  if (bulkKeys) {
+    if (Array.isArray(bulkKeys)) {
+      collected.push(...bulkKeys.filter(k => typeof k === 'string' && k.trim()));
+    } else if (typeof bulkKeys === 'string') {
+      try {
+        const parsed = JSON.parse(bulkKeys);
+        if (Array.isArray(parsed)) {
+          collected.push(...parsed.filter(k => typeof k === 'string' && k.trim()));
+        } else {
+          collected.push(bulkKeys.trim());
+        }
+      } catch (e) {
+        const split = bulkKeys.split(',').map(k => k.trim()).filter(k => k);
+        collected.push(...split);
       }
-    } catch {
-      keys = injected.split(',').map(k => k.trim()).filter(k => k.length > 10);
     }
   }
 
-  const unique = Array.from(new Set(keys));
-  if (unique.length > 0) {
-    console.log(`[Gemini] ${unique.length} API key(s) ready for rotation.`);
-  } else {
-    console.warn('[Gemini] No API keys found. Add GEMINI_API_KEY to Replit Secrets.');
+  // 2. Fallback to individual keys if they exist in the browser environment
+  // Note: Vite only supports static access like import.meta.env.VITE_GEMINI_API_KEY
+  const primaryKey = (import.meta as any).env.VITE_GEMINI_API_KEY;
+  if (primaryKey && primaryKey.trim()) {
+    collected.push(primaryKey.trim());
   }
-  return unique;
+  
+  // 3. Check for the bulk VITE_GEMINI_API_KEYS (common alias)
+  const apiBulkKeys = (import.meta as any).env.VITE_GEMINI_API_KEYS;
+  if (apiBulkKeys) {
+    if (Array.isArray(apiBulkKeys)) {
+      collected.push(...apiBulkKeys.filter(k => typeof k === 'string' && k.trim()));
+    } else if (typeof apiBulkKeys === 'string') {
+      try {
+        const parsed = JSON.parse(apiBulkKeys);
+        if (Array.isArray(parsed)) {
+          collected.push(...parsed.filter(k => typeof k === 'string' && k.trim()));
+        } else {
+          collected.push(apiBulkKeys.trim());
+        }
+      } catch (e) {
+        const split = apiBulkKeys.split(',').map(k => k.trim()).filter(k => k);
+        collected.push(...split);
+      }
+    }
+  }
+
+  // Final fallback: check for process.env.GEMINI_API_KEY (might be available if defined in vite.config.ts)
+  try {
+    const procKey = (process as any).env.GEMINI_API_KEY;
+    if (procKey && procKey.trim()) {
+      collected.push(procKey.trim());
+    }
+  } catch (e) { /* ignore */ }
+
+  const uniqueKeys = Array.from(new Set(collected)).filter(k => k && k.length > 10);
+  console.log(`[Gemini] Collected ${uniqueKeys.length} unique API keys for rotation.`);
+  if (uniqueKeys.length > 0) {
+    console.log(`[Gemini] Key prefixes: ${uniqueKeys.map(k => k.slice(0, 6)).join(', ')}`);
+  } else {
+    console.warn(`[Gemini] NO API KEYS COLLECTED! Please check your environment variables or secrets.`);
+  }
+  return uniqueKeys;
 }
 
 const allGeminiKeys = collectKeys();

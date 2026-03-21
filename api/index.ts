@@ -7,35 +7,47 @@ import { ConfusionMatrix } from 'ml-confusion-matrix';
 
 const app = express();
 app.use(express.json());
-const PORT = process.env.PORT ? parseInt(process.env.PORT) : 5000;
+const PORT = 3000;
 
-// API Proxy for arXiv to bypass CORS
-app.get("/api/arxiv", async (req, res) => {
-  const { q } = req.query;
-  if (!q) return res.status(400).json({ error: "Query parameter 'q' is required" });
-
-  const query = (q as string).startsWith("all:") || (q as string).startsWith("ti:") || (q as string).startsWith("au:") 
-    ? q 
-    : `all:${q}`;
-
-  const url = `https://export.arxiv.org/api/query?search_query=${encodeURIComponent(query as string)}&start=0&max_results=30&sortBy=relevance&sortOrder=descending`;
+  // API Proxy for arXiv to bypass CORS
+  app.get("/api/arxiv", async (req, res) => {
+    const { q } = req.query;
+    if (!q) return res.status(400).json({ error: "Query parameter 'q' is required" });
   
-  try {
-    const response = await fetch(url, {
-      headers: { "User-Agent": "ResearchAgent/1.0" }
-    });
+    const query = (q as string).startsWith("all:") || (q as string).startsWith("ti:") || (q as string).startsWith("au:") 
+      ? q 
+      : `all:${q}`;
+  
+    const url = `https://export.arxiv.org/api/query?search_query=${encodeURIComponent(query as string)}&start=0&max_results=30&sortBy=relevance&sortOrder=descending`;
     
-    if (!response.ok) {
-      return res.status(response.status).json({ error: `ArXiv API error: ${response.status}` });
-    }
+    // 10s timeout for ArXiv
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 10000);
 
-    const data = await response.text();
-    res.set("Content-Type", "application/xml");
-    res.send(data);
-  } catch (error) {
-    res.status(500).json({ error: "Failed to fetch from arXiv" });
-  }
-});
+    try {
+      const response = await fetch(url, {
+        headers: { "User-Agent": "ResearchAgent/1.0" },
+        signal: controller.signal
+      });
+      
+      clearTimeout(timeoutId);
+
+      if (!response.ok) {
+        return res.status(response.status).json({ error: `ArXiv API error: ${response.status}` });
+      }
+  
+      const data = await response.text();
+      res.set("Content-Type", "application/xml");
+      res.send(data);
+    } catch (error: any) {
+      clearTimeout(timeoutId);
+      if (error.name === 'AbortError') {
+        res.status(504).json({ error: "ArXiv API request timed out" });
+      } else {
+        res.status(500).json({ error: "Failed to fetch from arXiv" });
+      }
+    }
+  });
 
 app.post("/api/run-experiment", async (req, res) => {
   const { hypothesis, plan } = req.body;
