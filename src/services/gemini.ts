@@ -6,7 +6,7 @@ function collectKeys(): string[] {
   const collected: string[] = [];
   
   // 1. Check for the bulk VITE_GEMINI_KEYS provided by vite.config.ts
-  // This is the primary source of keys, including those from AI Studio Secrets
+  // This is the primary source of keys aggregated by the Vite config
   const bulkKeys = (import.meta as any).env.VITE_GEMINI_KEYS;
   if (bulkKeys) {
     if (Array.isArray(bulkKeys)) {
