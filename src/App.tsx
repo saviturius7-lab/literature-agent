@@ -516,9 +516,9 @@ ${(state.report.references || []).map(ref => `- ${ref}`).join('\n')}
                 onClick={runResearch}
                 disabled={(state.status !== 'idle' && state.status !== 'completed' && state.status !== 'error') || (geminiStatus.available === 0 && deepseekStatus.available === 0)}
                 className="absolute right-1 top-1 bottom-1 px-4 bg-pink-deep text-white rounded-full text-xs font-bold uppercase tracking-widest hover:bg-pink-deep/90 transition-colors disabled:opacity-50"
-                title={(geminiStatus.available === 0 && deepseekStatus.available === 0) ? "No API keys available. Check your Gemini or DeepSeek keys in Settings -> Secrets." : ""}
+                title={(geminiStatus.available === 0 && deepseekStatus.available === 0) ? "No provider keys available. Check your configured keys in Settings -> Secrets." : ""}
               >
-                {state.status === 'idle' || isCompleted || state.status === 'error' ? 'Start' : 'Running...'}
+                {state.status === 'idle' || isCompleted || state.status === 'error' ? 'Run Research' : 'Running...'}
               </button>
             </div>
           </div>
@@ -565,7 +565,7 @@ ${(state.report.references || []).map(ref => `- ${ref}`).join('\n')}
               <h2 className="text-xs font-bold uppercase tracking-widest text-pink-pale/40 mb-4">Agent Status</h2>
               <div className="space-y-4">
                 {state.status === 'idle' && (
-                  <p className="text-sm text-pink-pale/60 italic">Enter a topic to begin the multi-agent research workflow.</p>
+                  <p className="text-sm text-pink-pale/60 italic">Enter a topic to begin the research workflow.</p>
                 )}
                 {state.status !== 'idle' && (
                   <div className="space-y-3">
@@ -587,7 +587,7 @@ ${(state.report.references || []).map(ref => `- ${ref}`).join('\n')}
                     {(geminiStatus.total > 0 || deepseekStatus.total > 0) && (
                       <div className="pl-7 pt-2 border-t border-pink-pale/5 mt-2 space-y-2">
                         <div className="flex items-center justify-between mb-2">
-                          <span className="text-[9px] uppercase tracking-widest font-bold text-pink-pale/20">API Infrastructure</span>
+                          <span className="text-[9px] uppercase tracking-widest font-bold text-pink-pale/20">Provider Infrastructure</span>
                           <button 
                             onClick={handleResetAPI}
                             className="text-[8px] uppercase tracking-widest font-bold text-pink-deep hover:text-pink-deep/80 transition-colors flex items-center gap-1"
@@ -599,7 +599,7 @@ ${(state.report.references || []).map(ref => `- ${ref}`).join('\n')}
                         {deepseekStatus.total > 0 && (
                           <div>
                             <div className="flex items-center justify-between text-[9px] uppercase tracking-wider mb-1">
-                              <span className="text-pink-pale/40">DeepSeek Status (Preferred)</span>
+                              <span className="text-pink-pale/40">Primary Provider Status</span>
                               <span className={cn(
                                 "font-bold",
                                 deepseekStatus.available > 0 ? "text-emerald-500" : "text-amber-500"
@@ -613,7 +613,7 @@ ${(state.report.references || []).map(ref => `- ${ref}`).join('\n')}
                         {geminiStatus.total > 0 && (
                           <div>
                             <div className="flex items-center justify-between text-[9px] uppercase tracking-wider mb-1">
-                              <span className="text-pink-pale/40">Gemini Status (Fallback)</span>
+                              <span className="text-pink-pale/40">Fallback Provider Status</span>
                               <span className={cn(
                                 "font-bold",
                                 geminiStatus.available > 0 ? "text-emerald-500" : "text-amber-500"
@@ -636,7 +636,7 @@ ${(state.report.references || []).map(ref => `- ${ref}`).join('\n')}
 
                         {geminiStatus.totalRetries > 0 && (
                           <p className="text-[8px] text-pink-pale/30">
-                            Total API Retries: {geminiStatus.totalRetries}
+                            Total Provider Retries: {geminiStatus.totalRetries}
                           </p>
                         )}
                       </div>
@@ -655,7 +655,7 @@ ${(state.report.references || []).map(ref => `- ${ref}`).join('\n')}
                     {(state.error.includes("API key") || state.error.includes("PERMISSION_DENIED") || state.error.includes("Balance") || state.error.includes("Unauthorized") || state.error.includes("RESOURCE_EXHAUSTED") || state.error.includes("429") || state.error.includes("quota") || state.error.includes("hard quota")) && (
                       <div className="p-3 bg-dark-bg/50 rounded-lg border border-pink-deep/10">
                         <div className="flex items-center justify-between mb-2">
-                          <p className="text-[9px] text-pink-deep font-bold uppercase tracking-wider">Troubleshooting Advice:</p>
+                          <p className="text-[9px] text-pink-deep font-bold uppercase tracking-wider">Troubleshooting:</p>
                           <button 
                             onClick={handleResetAPI}
                             className="text-[8px] px-2 py-1 bg-pink-deep/10 border border-pink-deep/20 rounded-md text-pink-deep font-bold uppercase tracking-widest hover:bg-pink-deep/20 transition-all"
@@ -664,15 +664,15 @@ ${(state.report.references || []).map(ref => `- ${ref}`).join('\n')}
                           </button>
                         </div>
                         <p className="text-[10px] text-pink-pale/60 leading-relaxed">
-                          It looks like there's an issue with your API keys, account balance, or rate limits. 
+                          It looks like there's an issue with your provider keys, account balance, or rate limits. 
                           The app is automatically rotating through your keys, but you may need to:
                         </p>
                         <ul className="text-[10px] text-pink-pale/40 mt-2 list-disc list-inside space-y-1">
-                          <li>DeepSeek is now the <strong>preferred provider</strong> for research tasks.</li>
-                          <li>Add DeepSeek keys as <strong>VITE_DEEPSEEK_API_KEY_1</strong> (up to 10) for maximum performance.</li>
-                          <li>The app <strong>automatically falls back to Gemini</strong> if DeepSeek keys are exhausted or rate-limited.</li>
+                          <li>Ensure your primary provider keys are configured and still active.</li>
+                          <li>Add primary provider keys with <strong>VITE_DEEPSEEK_API_KEY_1</strong> (up to 10) for stronger throughput.</li>
+                          <li>The app <strong>automatically switches to the fallback provider</strong> when the primary pool is exhausted or rate-limited.</li>
                           <li>Ensure <strong>VITE_GEMINI_API_KEY_1</strong> (up to 32) are valid for reliable fallback support.</li>
-                          <li>If you see "hard quota" errors, your Gemini key has likely reached its free tier limit or billing cap. You can try adding more keys or wait for the 5-minute cooldown.</li>
+                          <li>If you see "hard quota" errors, a fallback key likely reached its plan limit. Add more keys or wait for the 5-minute cooldown.</li>
                         </ul>
                       </div>
                     )}
@@ -1338,30 +1338,32 @@ ${(state.report.references || []).map(ref => `- ${ref}`).join('\n')}
               <span className="text-[10px] uppercase tracking-widest font-bold">Literature Agent v1.1</span>
             </div>
             
-            {/* Gemini API Status Monitor */}
+            {/* Provider Status Monitor */}
             <div className="flex items-center gap-4 px-4 py-1.5 bg-black/20 rounded-full border border-pink-pale/5">
               <div className="flex items-center gap-1.5">
                 <div className={cn(
                   "w-1.5 h-1.5 rounded-full animate-pulse",
-                  geminiStatus.available > 0 ? "bg-emerald-500" : "bg-red-500"
+                  (deepseekStatus.available > 0 || geminiStatus.available > 0) ? "bg-emerald-500" : "bg-red-500"
                 )} />
-                <span className="text-[9px] uppercase tracking-widest font-bold text-pink-pale/40">API Status</span>
+                <span className="text-[9px] uppercase tracking-widest font-bold text-pink-pale/40">Provider Status</span>
               </div>
               <div className="flex items-center gap-3 text-[9px] font-mono text-pink-pale/60">
-                <span title="Available Keys">AVAIL: {geminiStatus.available}</span>
-                <span title="Cooling Down Keys" className={geminiStatus.coolingDown > 0 ? "text-amber-400" : ""}>COOL: {geminiStatus.coolingDown}</span>
-                <span title="Failed Keys" className={geminiStatus.failed > 0 ? "text-red-400" : ""}>FAIL: {geminiStatus.failed}</span>
-                <span title="Total Keys">TOTAL: {geminiStatus.total}</span>
+                <span title="Available Primary Provider Keys">P: {deepseekStatus.available}/{deepseekStatus.total}</span>
+                <span title="Available Fallback Provider Keys">F: {geminiStatus.available}/{geminiStatus.total}</span>
+                <span title="Cooling Down Fallback Keys" className={geminiStatus.coolingDown > 0 ? "text-amber-400" : ""}>COOL: {geminiStatus.coolingDown}</span>
+                <span title="Failed Fallback Keys" className={geminiStatus.failed > 0 ? "text-red-400" : ""}>FAIL: {geminiStatus.failed}</span>
                 {geminiStatus.totalRetries > 0 && (
                   <span title="Total Retries" className="text-pink-deep/60 animate-pulse">RETRIES: {geminiStatus.totalRetries}</span>
                 )}
                 <button 
                   onClick={() => {
+                    resetDeepSeekStatus();
                     resetGeminiStatus();
+                    setDeepseekStatus(getDeepSeekStatus());
                     setGeminiStatus(getGeminiStatus());
                   }}
                   className="ml-2 p-1 rounded hover:bg-pink-pale/10 text-pink-pale/40 hover:text-pink-pale/80 transition-colors"
-                  title="Reset API rotation and clear all failures/cooldowns"
+                  title="Reset provider rotation and clear all failures/cooldowns"
                 >
                   <RefreshCw className="w-2.5 h-2.5" />
                 </button>
@@ -1369,7 +1371,7 @@ ${(state.report.references || []).map(ref => `- ${ref}`).join('\n')}
             </div>
           </div>
           <p className="text-[10px] text-pink-pale/40 uppercase tracking-widest font-bold">
-            Powered by Gemini 3.1 & arXiv API
+            Grounded with provider APIs & arXiv
           </p>
         </div>
       </footer>

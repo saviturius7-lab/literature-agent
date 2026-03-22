@@ -37,7 +37,7 @@ function cosineSimilarity(a: number[], b: number[]): number {
 export const TopicRefinementAgent = {
   async refine(topic: string): Promise<string> {
     const prompt = `Refine the following research topic into a specific, high-impact research question suitable for a scientific paper.
-    Avoid overly broad topics. Focus on a specific niche in AI/ML.
+    Avoid overly broad topics. Focus on a specific niche.
     
     Initial Topic: "${topic}"
     
@@ -204,10 +204,10 @@ export const LiteratureAgent = {
       
       console.log(`Multi-strategy search complete. Found ${allPapers.length} unique papers.`);
 
-      // 3. General AI/ML fallback if still desperate
+      // 3. General fallback if still desperate
       if (allPapers.length < 5) {
-        onProgress?.("Applying general AI/ML fallback search...");
-        const fallbackQueries = ["machine learning", "artificial intelligence", "deep learning"];
+        onProgress?.("Applying broader fallback search...");
+        const fallbackQueries = ["machine learning", "neural networks", "deep learning"];
         const fallbackResults = await Promise.all(fallbackQueries.map(q => this.executeSearch(q).catch(e => [])));
         fallbackResults.forEach(results => addPapers(results));
       }
@@ -647,7 +647,7 @@ export const ContributionAgent = {
       ]
     }`;
     
-    const result = await generateJSON<{ contributions: Contribution[] }>(prompt, "You are a senior research lead at a top AI lab.");
+    const result = await generateJSON<{ contributions: Contribution[] }>(prompt, "You are a senior research lead at a top research lab.");
     const contributions = Array.isArray(result.contributions) ? result.contributions : [];
     if (contributions.length < 2) {
       throw new Error("Failed to generate at least 2 concrete contributions.");
