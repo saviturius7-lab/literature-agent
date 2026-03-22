@@ -72,6 +72,13 @@ export interface FailureCase {
   explanation: string;
 }
 
+export interface ExperimentConfig {
+  datasetSize?: number;
+  noiseLevel?: number;
+  featureComplexity?: number;
+  dataType?: 'classification' | 'regression' | 'clustering';
+}
+
 export interface ExperimentResult {
   accuracy: number;
   f1Score: number;
@@ -80,6 +87,8 @@ export interface ExperimentResult {
   failureCases: FailureCase[];
   implementationDetails: string;
   logs: string[];
+  leaderboard?: { model: string; score_test: number; stack_level: number }[];
+  featureImportance?: Record<string, number>;
 }
 
 export interface Critique {
@@ -151,6 +160,7 @@ export interface AppState {
   experimentPlan: ExperimentPlan | null;
   datasetCard: DatasetCard | null;
   experiment: ExperimentResult | null;
+  experimentConfig: ExperimentConfig;
   reviewerCritiques: ReviewerCritique[];
   report: ResearchReport | null;
   factualityResult: FactualityResult | null;

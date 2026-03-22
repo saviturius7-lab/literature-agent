@@ -1,6 +1,11 @@
 # Literature Agent
 
 Literature Agent is a research-oriented web application that orchestrates a multi-step, multi-agent workflow for turning a rough topic into a grounded pseudo-paper workflow. It combines arXiv retrieval, OpenAlex verification, retrieval-augmented generation (RAG), hypothesis generation, synthetic experiment execution, reviewer simulation, and report drafting inside a single React + Express application.
+<div align="center">
+<img width="1200" height="475" alt="GHBanner" src="https://github.com/user-attachments/assets/0aa67016-6eaf-458a-adb2-6e31a0763ed6" />
+</div>
+
+# Run and deploy your AI Studio app
 
 The project is designed to do more than just chat about a topic. It attempts to:
 

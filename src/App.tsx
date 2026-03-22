@@ -53,6 +53,7 @@ import {
   ExperimentPlan,
   DatasetCard,
   ReviewerCritique,
+  ExperimentConfig,
   Chunk
 } from './types';
 import { 
@@ -95,6 +96,12 @@ export default function App() {
     experimentPlan: null,
     datasetCard: null,
     experiment: null,
+    experimentConfig: {
+      datasetSize: 1000,
+      noiseLevel: 0.05,
+      featureComplexity: 10,
+      dataType: 'classification'
+    },
     reviewerCritiques: [],
     report: null,
     factualityResult: null,
@@ -122,6 +129,16 @@ export default function App() {
     resetDeepSeekStatus();
     setGeminiStatus(getGeminiStatus());
     setDeepseekStatus(getDeepSeekStatus());
+  };
+
+  const updateExperimentConfig = (updates: Partial<ExperimentConfig>) => {
+    setState(prev => ({
+      ...prev,
+      experimentConfig: {
+        ...prev.experimentConfig,
+        ...updates
+      }
+    }));
   };
 
   const runResearch = async () => {
@@ -284,7 +301,7 @@ export default function App() {
 
         // 7. Execution / simulation with limits
         setState(prev => ({ ...prev, status: 'experimenting' }));
-        const experiment = await ExperimentRunner.runExperiment(hypothesis, experimentPlan);
+        const experiment = await ExperimentRunner.runExperiment(hypothesis, experimentPlan, state.experimentConfig);
         await stepDelay();
         setState(prev => ({ ...prev, experiment }));
 
@@ -374,7 +391,27 @@ export default function App() {
 
     } catch (err: any) {
       console.error("Research workflow error:", err);
-      setState(prev => ({ ...prev, status: 'error', error: err.message }));
+      let displayError = err.message || String(err);
+      
+      // Try to parse JSON error messages from LLM providers
+      if (displayError.includes('{') && displayError.includes('}')) {
+        try {
+          const start = displayError.indexOf('{');
+          const end = displayError.lastIndexOf('}') + 1;
+          const jsonStr = displayError.substring(start, end);
+          const parsed = JSON.parse(jsonStr);
+          
+          if (parsed.error && parsed.error.message) {
+            displayError = parsed.error.message;
+          } else if (parsed.message) {
+            displayError = parsed.message;
+          }
+        } catch (e) {
+          // Not JSON or parse failed, keep original
+        }
+      }
+      
+      setState(prev => ({ ...prev, status: 'error', error: displayError }));
     }
   };
 
@@ -607,6 +644,11 @@ ${(state.report.references || []).map(ref => `- ${ref}`).join('\n')}
                                 {deepseekStatus.available} / {deepseekStatus.total} Keys
                               </span>
                             </div>
+                            {deepseekStatus.total > 0 && deepseekStatus.available === 0 && (
+                              <p className="text-[8px] text-amber-500 italic">
+                                All DeepSeek keys failed or invalid. Falling back to Gemini.
+                              </p>
+                            )}
                           </div>
                         )}
 
@@ -671,6 +713,10 @@ ${(state.report.references || []).map(ref => `- ${ref}`).join('\n')}
                           <li>Ensure your primary provider keys are configured and still active.</li>
                           <li>Add primary provider keys with <strong>VITE_DEEPSEEK_API_KEY_1</strong> (up to 10) for stronger throughput.</li>
                           <li>The app <strong>automatically switches to the fallback provider</strong> when the primary pool is exhausted or rate-limited.</li>
+                          <li>DeepSeek is now the <strong>preferred provider</strong> for research tasks.</li>
+                          <li>Add DeepSeek keys as <strong>VITE_DEEPSEEK_API_KEY_1</strong> (up to 10) for maximum performance.</li>
+                          <li>The app <strong>automatically falls back to Gemini</strong> if DeepSeek keys are exhausted or rate-limited.</li>
+                          <li>If you see "authentication fails" or "user not found", your DeepSeek/OpenRouter key is invalid. Please update it in Settings &rarr; Secrets.</li>
                           <li>Ensure <strong>VITE_GEMINI_API_KEY_1</strong> (up to 32) are valid for reliable fallback support.</li>
                           <li>If you see "hard quota" errors, a fallback key likely reached its plan limit. Add more keys or wait for the 5-minute cooldown.</li>
                         </ul>
@@ -678,6 +724,84 @@ ${(state.report.references || []).map(ref => `- ${ref}`).join('\n')}
                     )}
                   </div>
                 )}
+              </div>
+            </div>
+
+            {/* Simulation Configuration */}
+            <div className="bg-dark-surface border border-pink-pale/10 rounded-2xl p-6 shadow-sm">
+              <h2 className="text-xs font-bold uppercase tracking-widest text-pink-pale/40 mb-4">Simulation Parameters</h2>
+              <div className="space-y-6">
+                <div className="space-y-2">
+                  <div className="flex justify-between items-center">
+                    <label className="text-[10px] uppercase tracking-widest font-bold text-pink-pale/60">Dataset Size</label>
+                    <span className="text-[10px] font-mono text-pink-deep">{state.experimentConfig.datasetSize}</span>
+                  </div>
+                  <input 
+                    type="range" 
+                    min="100" 
+                    max="5000" 
+                    step="100"
+                    value={state.experimentConfig.datasetSize}
+                    onChange={(e) => updateExperimentConfig({ datasetSize: parseInt(e.target.value) })}
+                    className="w-full h-1 bg-pink-pale/10 rounded-lg appearance-none cursor-pointer accent-pink-deep"
+                    disabled={state.status !== 'idle' && state.status !== 'completed' && state.status !== 'error'}
+                  />
+                </div>
+
+                <div className="space-y-2">
+                  <div className="flex justify-between items-center">
+                    <label className="text-[10px] uppercase tracking-widest font-bold text-pink-pale/60">Noise Level</label>
+                    <span className="text-[10px] font-mono text-pink-deep">{(state.experimentConfig.noiseLevel * 100).toFixed(0)}%</span>
+                  </div>
+                  <input 
+                    type="range" 
+                    min="0" 
+                    max="0.5" 
+                    step="0.01"
+                    value={state.experimentConfig.noiseLevel}
+                    onChange={(e) => updateExperimentConfig({ noiseLevel: parseFloat(e.target.value) })}
+                    className="w-full h-1 bg-pink-pale/10 rounded-lg appearance-none cursor-pointer accent-pink-deep"
+                    disabled={state.status !== 'idle' && state.status !== 'completed' && state.status !== 'error'}
+                  />
+                </div>
+
+                <div className="space-y-2">
+                  <div className="flex justify-between items-center">
+                    <label className="text-[10px] uppercase tracking-widest font-bold text-pink-pale/60">Feature Complexity</label>
+                    <span className="text-[10px] font-mono text-pink-deep">{state.experimentConfig.featureComplexity}</span>
+                  </div>
+                  <input 
+                    type="range" 
+                    min="2" 
+                    max="50" 
+                    step="1"
+                    value={state.experimentConfig.featureComplexity}
+                    onChange={(e) => updateExperimentConfig({ featureComplexity: parseInt(e.target.value) })}
+                    className="w-full h-1 bg-pink-pale/10 rounded-lg appearance-none cursor-pointer accent-pink-deep"
+                    disabled={state.status !== 'idle' && state.status !== 'completed' && state.status !== 'error'}
+                  />
+                </div>
+
+                <div className="space-y-2">
+                  <label className="text-[10px] uppercase tracking-widest font-bold text-pink-pale/60">Data Type</label>
+                  <div className="grid grid-cols-3 gap-2">
+                    {(['classification', 'regression', 'clustering'] as const).map((type) => (
+                      <button
+                        key={type}
+                        onClick={() => updateExperimentConfig({ dataType: type })}
+                        disabled={state.status !== 'idle' && state.status !== 'completed' && state.status !== 'error'}
+                        className={cn(
+                          "px-2 py-1.5 rounded-lg text-[9px] font-bold uppercase tracking-wider transition-all border",
+                          state.experimentConfig.dataType === type 
+                            ? "bg-pink-deep border-pink-deep text-white" 
+                            : "bg-dark-bg border-pink-pale/10 text-pink-pale/40 hover:border-pink-pale/20"
+                        )}
+                      >
+                        {type}
+                      </button>
+                    ))}
+                  </div>
+                </div>
               </div>
             </div>
 
@@ -748,6 +872,58 @@ ${(state.report.references || []).map(ref => `- ${ref}`).join('\n')}
                     </BarChart>
                   </ResponsiveContainer>
                 </div>
+
+                {state.experiment.leaderboard && state.experiment.leaderboard.length > 0 && (
+                  <div className="mb-8 p-4 bg-dark-bg/50 rounded-xl border border-pink-pale/5">
+                    <h3 className="text-[9px] uppercase tracking-widest font-bold text-pink-deep mb-4 flex items-center gap-2">
+                      <TrendingUp className="w-3 h-3" />
+                      AutoGluon Leaderboard
+                    </h3>
+                    <div className="space-y-2">
+                      {state.experiment.leaderboard.map((m, idx) => (
+                        <div key={idx} className="flex items-center justify-between text-[10px]">
+                          <div className="flex items-center gap-2">
+                            <span className="text-pink-pale/40">{idx + 1}.</span>
+                            <span className={cn("font-medium", m.stack_level > 0 ? "text-pink-deep" : "text-pink-pale/80")}>
+                              {m.model}
+                              {m.stack_level > 0 && <span className="ml-1 text-[8px] bg-pink-deep/20 px-1 rounded text-pink-deep">Ensemble</span>}
+                            </span>
+                          </div>
+                          <span className="font-mono text-pink-deep">{(m.score_test * 100).toFixed(1)}%</span>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+
+                {state.experiment.featureImportance && Object.keys(state.experiment.featureImportance).length > 0 && (
+                  <div className="mb-8">
+                    <h3 className="text-[9px] uppercase tracking-widest font-bold text-pink-pale/40 mb-4 flex items-center gap-2">
+                      <BarChartIcon className="w-3 h-3" />
+                      Feature Importance
+                    </h3>
+                    <div className="space-y-3">
+                      {Object.entries(state.experiment.featureImportance)
+                        .sort(([, a], [, b]) => b - a)
+                        .slice(0, 5)
+                        .map(([feature, importance], idx) => (
+                          <div key={idx} className="space-y-1">
+                            <div className="flex justify-between text-[9px] uppercase tracking-wider">
+                              <span className="text-pink-pale/60">{feature}</span>
+                              <span className="text-pink-deep font-mono">{(importance * 100).toFixed(1)}%</span>
+                            </div>
+                            <div className="h-1 w-full bg-pink-pale/5 rounded-full overflow-hidden">
+                              <motion.div 
+                                initial={{ width: 0 }}
+                                animate={{ width: `${importance * 100}%` }}
+                                className="h-full bg-pink-deep"
+                              />
+                            </div>
+                          </div>
+                        ))}
+                    </div>
+                  </div>
+                )}
 
                 {state.experiment.ablationStudies && state.experiment.ablationStudies.length > 0 && (
                   <div className="mb-8">
@@ -1215,6 +1391,118 @@ ${(state.report.references || []).map(ref => `- ${ref}`).join('\n')}
                       <p className="text-lg leading-relaxed font-serif italic text-pink-pale/80">{state.report.abstract}</p>
                     </div>
 
+                    {state.hypothesis && (
+                      <section className="bg-dark-bg border border-pink-pale/10 p-8 rounded-2xl">
+                        <h3 className="text-xs uppercase tracking-widest font-bold mb-4 text-pink-deep">Research Hypothesis</h3>
+                        <div className="space-y-4">
+                          <h4 className="text-lg font-serif italic text-pink-pale">{state.hypothesis.title}</h4>
+                          <p className="text-sm text-pink-pale/70 leading-relaxed">{state.hypothesis.description}</p>
+                        </div>
+                      </section>
+                    )}
+
+                    {state.experimentPlan && (
+                      <section className="bg-dark-bg border border-pink-pale/10 p-8 rounded-2xl">
+                        <h3 className="text-xs uppercase tracking-widest font-bold mb-4 text-pink-deep">Experiment Design & Parameters</h3>
+                        <div className="grid grid-cols-1 md:grid-cols-2 gap-8 mb-6">
+                          <div className="space-y-4">
+                            <h4 className="text-[10px] uppercase tracking-widest font-bold text-pink-deep/60">Simulation Parameters</h4>
+                            <div className="grid grid-cols-2 gap-4 text-xs">
+                              <div>
+                                <span className="text-pink-pale/40 block mb-1">Dataset Size</span>
+                                <span className="text-pink-pale/80 font-mono">{state.experimentConfig.datasetSize}</span>
+                              </div>
+                              <div>
+                                <span className="text-pink-pale/40 block mb-1">Noise Level</span>
+                                <span className="text-pink-pale/80 font-mono">{(state.experimentConfig.noiseLevel || 0) * 100}%</span>
+                              </div>
+                              <div>
+                                <span className="text-pink-pale/40 block mb-1">Complexity</span>
+                                <span className="text-pink-pale/80 font-mono">{state.experimentConfig.featureComplexity} features</span>
+                              </div>
+                              <div>
+                                <span className="text-pink-pale/40 block mb-1">Task Type</span>
+                                <span className="text-pink-pale/80 font-mono uppercase">{state.experimentConfig.dataType}</span>
+                              </div>
+                            </div>
+                          </div>
+                          <div className="space-y-4">
+                            <h4 className="text-[10px] uppercase tracking-widest font-bold text-pink-deep/60">Evaluation Protocol</h4>
+                            <p className="text-xs text-pink-pale/70 leading-relaxed italic">{state.experimentPlan.protocol}</p>
+                          </div>
+                        </div>
+                        <div className="grid grid-cols-1 md:grid-cols-3 gap-6 text-xs border-t border-pink-pale/5 pt-6">
+                          <div>
+                            <span className="text-pink-deep/40 uppercase tracking-widest font-bold block mb-2">Datasets</span>
+                            <ul className="space-y-1">
+                              {state.experimentPlan.datasets.map((d, i) => <li key={i} className="text-pink-pale/60">• {d}</li>)}
+                            </ul>
+                          </div>
+                          <div>
+                            <span className="text-pink-deep/40 uppercase tracking-widest font-bold block mb-2">Baselines</span>
+                            <ul className="space-y-1">
+                              {state.experimentPlan.baselines.map((b, i) => <li key={i} className="text-pink-pale/60">• {b}</li>)}
+                            </ul>
+                          </div>
+                          <div>
+                            <span className="text-pink-deep/40 uppercase tracking-widest font-bold block mb-2">Metrics</span>
+                            <ul className="space-y-1">
+                              {state.experimentPlan.metrics.map((m, i) => <li key={i} className="text-pink-pale/60">• {m}</li>)}
+                            </ul>
+                          </div>
+                        </div>
+                      </section>
+                    )}
+
+                    {state.mathFormalization && (
+                      <section className="bg-dark-bg border border-pink-pale/10 p-8 rounded-2xl">
+                        <h3 className="text-xs uppercase tracking-widest font-bold mb-4 text-pink-deep">Mathematical Formalization</h3>
+                        <div className="bg-black/20 p-6 rounded-xl font-mono text-xs text-pink-pale/80 leading-relaxed overflow-x-auto">
+                          <div className="mb-4 pb-4 border-b border-pink-pale/5">
+                            <span className="text-pink-deep/40 block mb-2 uppercase tracking-tighter font-bold">Problem Formulation</span>
+                            <div className="prose-invert"><Markdown>{state.mathFormalization.problemFormulation}</Markdown></div>
+                          </div>
+                          <div className="mb-4 pb-4 border-b border-pink-pale/5">
+                            <span className="text-pink-deep/40 block mb-2 uppercase tracking-tighter font-bold">Notation</span>
+                            <div className="space-y-1">
+                              {state.mathFormalization.notation.map((n, i) => (
+                                <div key={i} className="flex gap-2">
+                                  <span className="text-pink-deep font-bold">{n.symbol}:</span>
+                                  <span>{n.definition}</span>
+                                </div>
+                              ))}
+                            </div>
+                          </div>
+                          <div className="mb-4 pb-4 border-b border-pink-pale/5">
+                            <span className="text-pink-deep/40 block mb-2 uppercase tracking-tighter font-bold">Objective Function</span>
+                            <div className="prose-invert"><Markdown>{state.mathFormalization.objectiveFunction}</Markdown></div>
+                          </div>
+                          <div>
+                            <span className="text-pink-deep/40 block mb-2 uppercase tracking-tighter font-bold">Algorithm Steps</span>
+                            <ul className="list-decimal list-inside space-y-1">
+                              {state.mathFormalization.algorithmSteps.map((step, i) => (
+                                <li key={i}>{step}</li>
+                              ))}
+                            </ul>
+                          </div>
+                        </div>
+                      </section>
+                    )}
+
+                    {state.contributions && state.contributions.length > 0 && (
+                      <section className="bg-dark-bg border border-pink-pale/10 p-8 rounded-2xl">
+                        <h3 className="text-xs uppercase tracking-widest font-bold mb-4 text-pink-deep">Key Contributions</h3>
+                        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                          {state.contributions.map((c, i) => (
+                            <div key={i} className="p-4 bg-black/20 rounded-xl border border-pink-pale/5">
+                              <h4 className="text-[10px] font-bold text-pink-deep mb-1 uppercase tracking-widest">{c.type}</h4>
+                              <p className="text-[10px] text-pink-pale/60 leading-relaxed">{c.description}</p>
+                            </div>
+                          ))}
+                        </div>
+                      </section>
+                    )}
+
                     <div className="grid grid-cols-1 md:grid-cols-2 gap-12">
                       <section>
                         <h3 className="text-xs uppercase tracking-widest font-bold mb-4 border-b border-pink-pale/10 pb-2 text-pink-deep">Introduction</h3>
@@ -1227,9 +1515,129 @@ ${(state.report.references || []).map(ref => `- ${ref}`).join('\n')}
                     </div>
 
                     <section className="bg-dark-bg border border-pink-pale/10 p-8 rounded-2xl">
-                      <h3 className="text-xs uppercase tracking-widest font-bold mb-6 text-center text-pink-deep">Experimental Results</h3>
-                      <div className="text-sm leading-relaxed text-pink-pale/70 prose-invert"><Markdown>{state.report.results}</Markdown></div>
+                      <h3 className="text-xs uppercase tracking-widest font-bold mb-6 text-center text-pink-deep">Experimental Results & Visual Evidence</h3>
+                      <div className="text-sm leading-relaxed text-pink-pale/70 prose-invert mb-8"><Markdown>{state.report.results}</Markdown></div>
+                      
+                      {state.experiment && (
+                        <div className="space-y-12 mt-8 pt-8 border-t border-pink-pale/5">
+                          {/* Performance Chart in PDF */}
+                          <div className="h-64 w-full">
+                            <h4 className="text-[10px] uppercase tracking-widest font-bold text-pink-deep mb-4 flex items-center gap-2">
+                              <TrendingUp className="w-3 h-3" />
+                              Performance Comparison
+                            </h4>
+                            <ResponsiveContainer width="100%" height="100%">
+                              <BarChart
+                                data={[
+                                  { name: 'Proposed', accuracy: state.experiment.accuracy * 100 },
+                                  ...(Array.isArray(state.experiment.baselines) ? state.experiment.baselines : []).map(b => ({ name: b.name, accuracy: b.accuracy * 100 }))
+                                ]}
+                                margin={{ top: 5, right: 5, left: -20, bottom: 5 }}
+                              >
+                                <CartesianGrid strokeDasharray="3 3" stroke="#ffffff10" vertical={false} />
+                                <XAxis dataKey="name" stroke="#f5f2ed40" fontSize={10} tickLine={false} axisLine={false} />
+                                <YAxis stroke="#f5f2ed40" fontSize={10} tickLine={false} axisLine={false} domain={[0, 100]} />
+                                <Bar dataKey="accuracy" radius={[4, 4, 0, 0]}>
+                                  {[
+                                    { name: 'Proposed', accuracy: state.experiment.accuracy * 100 },
+                                    ...(Array.isArray(state.experiment.baselines) ? state.experiment.baselines : []).map(b => ({ name: b.name, accuracy: b.accuracy * 100 }))
+                                  ].map((entry, index) => (
+                                    <Cell key={`cell-${index}`} fill={index === 0 ? '#FF6321' : '#f5f2ed20'} />
+                                  ))}
+                                </Bar>
+                              </BarChart>
+                            </ResponsiveContainer>
+                          </div>
+
+                          <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
+                            {/* Leaderboard in PDF */}
+                            {state.experiment.leaderboard && (
+                              <div className="p-4 bg-black/20 rounded-xl border border-pink-pale/5">
+                                <h4 className="text-[10px] uppercase tracking-widest font-bold text-pink-deep mb-4">AutoGluon Leaderboard</h4>
+                                <div className="space-y-2">
+                                  {state.experiment.leaderboard.map((m, idx) => (
+                                    <div key={idx} className="flex items-center justify-between text-[10px]">
+                                      <span className="text-pink-pale/80">{m.model}</span>
+                                      <span className="font-mono text-pink-deep">{(m.score_test * 100).toFixed(1)}%</span>
+                                    </div>
+                                  ))}
+                                </div>
+                              </div>
+                            )}
+
+                            {/* Feature Importance in PDF */}
+                            {state.experiment.featureImportance && (
+                              <div className="p-4 bg-black/20 rounded-xl border border-pink-pale/5">
+                                <h4 className="text-[10px] uppercase tracking-widest font-bold text-pink-deep mb-4">Feature Importance</h4>
+                                <div className="space-y-3">
+                                  {Object.entries(state.experiment.featureImportance)
+                                    .sort(([, a], [, b]) => b - a)
+                                    .slice(0, 5)
+                                    .map(([feature, importance], idx) => (
+                                      <div key={idx} className="space-y-1">
+                                        <div className="flex justify-between text-[8px] uppercase tracking-wider">
+                                          <span className="text-pink-pale/60">{feature}</span>
+                                          <span className="text-pink-deep">{(importance * 100).toFixed(1)}%</span>
+                                        </div>
+                                        <div className="h-1 w-full bg-pink-pale/5 rounded-full overflow-hidden">
+                                          <div className="h-full bg-pink-deep" style={{ width: `${importance * 100}%` }} />
+                                        </div>
+                                      </div>
+                                    ))}
+                                </div>
+                              </div>
+                            )}
+                          </div>
+                        </div>
+                      )}
                     </section>
+
+                    {state.reviewerCritiques && state.reviewerCritiques.length > 0 && (
+                      <section className="bg-dark-bg border border-pink-pale/10 p-8 rounded-2xl">
+                        <h3 className="text-xs uppercase tracking-widest font-bold mb-6 text-center text-pink-deep">Peer Review Analysis</h3>
+                        <div className="h-48 w-full mb-8">
+                          <h4 className="text-[10px] uppercase tracking-widest font-bold text-pink-deep mb-4 flex items-center gap-2">
+                            <ClipboardCheck className="w-3 h-3" />
+                            Reviewer Ratings
+                          </h4>
+                          <ResponsiveContainer width="100%" height="100%">
+                            <LineChart
+                              data={state.reviewerCritiques.map((c, i) => ({
+                                name: `R${i+1}`,
+                                rating: c.rating
+                              }))}
+                            >
+                              <CartesianGrid strokeDasharray="3 3" stroke="#ffffff10" vertical={false} />
+                              <XAxis dataKey="name" stroke="#f5f2ed40" fontSize={10} tickLine={false} axisLine={false} />
+                              <YAxis stroke="#f5f2ed40" fontSize={10} tickLine={false} axisLine={false} domain={[0, 10]} />
+                              <Line type="monotone" dataKey="rating" stroke="#FF6321" strokeWidth={2} dot={{ fill: '#FF6321', r: 4 }} />
+                            </LineChart>
+                          </ResponsiveContainer>
+                        </div>
+                        <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                          {state.reviewerCritiques.map((c, i) => (
+                            <div key={i} className="p-4 bg-black/20 rounded-xl border border-pink-pale/5">
+                              <div className="flex justify-between items-center mb-2">
+                                <span className="text-[10px] font-bold text-pink-deep">Reviewer {i+1}</span>
+                                <span className="text-xs font-mono text-pink-deep">{c.rating}/10</span>
+                              </div>
+                              <div className="space-y-2">
+                                <div>
+                                  <span className="text-[8px] uppercase text-pink-pale/40 block">Weaknesses</span>
+                                  <ul className="text-[8px] text-pink-pale/60 list-disc list-inside">
+                                    {c.weaknesses.slice(0, 2).map((w, j) => <li key={j}>{w}</li>)}
+                                  </ul>
+                                </div>
+                                <div>
+                                  <span className="text-[8px] uppercase text-pink-pale/40 block">Novelty Critique</span>
+                                  <p className="text-[8px] text-pink-pale/60 italic leading-relaxed">"{c.noveltyCritique.slice(0, 100)}..."</p>
+                                </div>
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                      </section>
+                    )}
 
                     {state.datasetCard && (
                       <section className="bg-dark-bg border border-pink-pale/10 p-8 rounded-2xl">

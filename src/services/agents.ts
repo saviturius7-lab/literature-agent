@@ -13,7 +13,8 @@ import {
   AblationStudy,
   FailureCase,
   GapIdentification,
-  FactualityResult
+  FactualityResult,
+  ExperimentConfig
 } from "../types";
 import { generateJSON, embedText, embedTexts } from "./gemini";
 import { vectorStore } from "./vectorStore";
@@ -696,6 +697,8 @@ export const ExperimentDesignAgent = {
     3. Specific evaluation metrics.
     4. A detailed evaluation protocol.
     
+    NOTE: The proposed model will be implemented using AutoGluon's TabularPredictor for automated ensemble learning and stacking.
+    
     Return a JSON object:
     {
       "protocol": "Step-by-step protocol",
@@ -737,12 +740,12 @@ export const DatasetGeneratorAgent = {
 };
 
 export const ExperimentRunner = {
-  async runExperiment(hypothesis: Hypothesis, plan: ExperimentPlan): Promise<ExperimentResult> {
+  async runExperiment(hypothesis: Hypothesis, plan: ExperimentPlan, config?: ExperimentConfig): Promise<ExperimentResult> {
     try {
       const response = await fetch("/api/run-experiment", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ hypothesis, plan })
+        body: JSON.stringify({ hypothesis, plan, config })
       });
       
       const data = await response.json();
@@ -753,7 +756,7 @@ export const ExperimentRunner = {
           const stages: Record<string, string> = {
             "validation": "Input Validation",
             "data_preparation": "Data Preparation",
-            "model_training_rf": "Proposed Model Training (Random Forest)",
+            "model_training_ag": "AutoGluon Model Training (Ensemble)",
             "model_training_lr": "Baseline Model Training (Logistic Regression)",
             "unknown": "General Execution"
           };

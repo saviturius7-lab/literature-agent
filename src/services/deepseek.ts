@@ -1,7 +1,4 @@
-/**
- * DeepSeek API Key Management
- * Collects and rotates through DeepSeek API keys for fallback support.
- */
+import { KeyRotator, KeyStats } from "./keyRotator";
 
 function collectDeepSeekKeys(): string[] {
   const collected: string[] = [];
@@ -49,6 +46,12 @@ function collectDeepSeekKeys(): string[] {
       }
     }
   }
+
+  // 4. Check for OPENROUTER_API_KEY (common source of sk-or- keys)
+  const orKey = (import.meta as any).env.VITE_OPENROUTER_API_KEY || (import.meta as any).env.OPENROUTER_API_KEY;
+  if (orKey && orKey.trim() && !orKey.includes("TODO")) {
+    collected.push(orKey.trim());
+  }
   
   const uniqueKeys = Array.from(new Set(collected)).filter(k => {
     if (!k || typeof k !== 'string' || k.length < 10) return false;
@@ -60,94 +63,77 @@ function collectDeepSeekKeys(): string[] {
     if (upper.includes("REPLACE_WITH")) return false;
     return true;
   });
+  
   if (uniqueKeys.length > 0) {
     console.log(`[DeepSeek] Collected ${uniqueKeys.length} unique API keys for rotation.`);
-    console.log(`[DeepSeek] Key prefixes: ${uniqueKeys.map(k => k.slice(0, 6)).join(', ')}`);
   } else {
     console.warn(`[DeepSeek] NO DEEPSEEK API KEYS COLLECTED!`);
   }
   return uniqueKeys;
 }
 
-export const allDeepSeekKeys = collectDeepSeekKeys();
-const failedKeys = new Set<string>();
-const keyCooldowns = new Map<string, number>();
-const keyLastUsed = new Map<string, number>();
+const allDeepSeekKeys = collectDeepSeekKeys();
+const rotator = new KeyRotator(allDeepSeekKeys, 'deepseek', {
+  minConcurrencyPerKey: 1,
+  maxConcurrencyPerKey: 4,
+  maxConcurrencyTotal: 15,
+  baseCooldownMs: 30000,
+  maxRetries: 5,
+  circuitBreakerThreshold: 5,
+  hedgingThresholdMs: 12000, // DeepSeek can be slow sometimes
+  enableHedging: true
+});
 
 export function getDeepSeekStatus() {
-  const now = Date.now();
-  const total = allDeepSeekKeys.length;
-  const failed = failedKeys.size;
-  const coolingDown = Array.from(keyCooldowns.values()).filter(t => t > now).length;
-  const available = total - failed - coolingDown;
-  
-  return { total, failed, coolingDown, available };
+  return rotator.getStatus();
 }
 
 export function resetDeepSeekStatus() {
-  failedKeys.clear();
-  keyCooldowns.clear();
-  keyLastUsed.clear();
+  rotator.reset();
 }
 
-export async function withDeepSeekRetry<T>(fn: (apiKey: string) => Promise<T>, retries = 5): Promise<T> {
-  let lastError: any;
+const deepSeekErrorHandler = (error: any, stats: KeyStats) => {
+  const status = error.status || 0;
+  const message = (error.message || "").toLowerCase();
+
+  const isAuth = status === 401 || status === 403 || 
+                message.includes("401") || message.includes("403") || 
+                message.includes("invalid") || message.includes("auth") || 
+                message.includes("unauthorized") || message.includes("user not found") || 
+                message.includes("authentication fails") || message.includes("credentials");
+
+  const isRate = status === 429 || message.includes("429") || 
+                message.includes("rate limit") || message.includes("quota") || 
+                message.includes("too many requests") || message.includes("insufficient_balance");
+
+  if (isAuth) return { retry: true, fatal: true };
+  if (isRate) return { retry: true, cooldownMs: 60000 };
   
-  for (let i = 0; i < retries; i++) {
-    const now = Date.now();
-    const availableKeys = allDeepSeekKeys.filter(k => {
-      if (failedKeys.has(k)) return false;
-      const cooldownUntil = keyCooldowns.get(k) || 0;
-      return now >= cooldownUntil;
-    }).sort((a, b) => (keyLastUsed.get(a) || 0) - (keyLastUsed.get(b) || 0));
-
-    if (availableKeys.length === 0) {
-      if (allDeepSeekKeys.length === 0) {
-        throw new Error("No DeepSeek API keys found.");
-      }
-      // Wait a bit if all keys are on cooldown
-      const waitTime = 2000 + (i * 1000);
-      console.warn(`[DeepSeek] All keys on cooldown. Waiting ${waitTime}ms...`);
-      await new Promise(resolve => setTimeout(resolve, waitTime));
-      continue;
-    }
-
-    const apiKey = availableKeys[0];
-    keyLastUsed.set(apiKey, Date.now());
-
-    try {
-      return await fn(apiKey);
-    } catch (error: any) {
-      lastError = error;
-      const status = error.status || 0;
-      const message = (error.message || "").toLowerCase();
-
-      if (status === 401 || message.includes("401") || message.includes("invalid") || message.includes("auth")) {
-        console.error(`[DeepSeek] Key ${apiKey.slice(0, 6)}... is invalid. Removing.`);
-        failedKeys.add(apiKey);
-      } else if (status === 429 || message.includes("429") || message.includes("rate limit") || message.includes("quota") || message.includes("too many requests")) {
-        const cooldown = 60000 + (i * 30000);
-        console.warn(`[DeepSeek] Key ${apiKey.slice(0, 6)}... rate limited. Cooldown: ${cooldown/1000}s.`);
-        keyCooldowns.set(apiKey, Date.now() + cooldown);
-      } else {
-        keyCooldowns.set(apiKey, Date.now() + 5000);
-      }
-    }
-  }
-  
-  throw lastError || new Error("DeepSeek max retries reached");
-}
+  return { retry: true, cooldownMs: 5000 };
+};
 
 export async function generateDeepSeekJSON<T>(prompt: string, systemInstruction?: string): Promise<T> {
-  return withDeepSeekRetry(async (apiKey) => {
-    const response = await fetch("https://api.deepseek.com/v1/chat/completions", {
+  return rotator.execute(async (apiKey) => {
+    // Detect provider based on key prefix
+    const isOpenRouter = apiKey.startsWith('sk-or-');
+    const endpoint = isOpenRouter 
+      ? "https://openrouter.ai/api/v1/chat/completions" 
+      : "https://api.deepseek.com/v1/chat/completions";
+    
+    const model = isOpenRouter ? "deepseek/deepseek-chat" : "deepseek-chat";
+
+    const response = await fetch(endpoint, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
-        "Authorization": `Bearer ${apiKey}`
+        "Authorization": `Bearer ${apiKey}`,
+        ...(isOpenRouter ? {
+          "HTTP-Referer": window.location.origin,
+          "X-Title": "Literature Agent"
+        } : {})
       },
       body: JSON.stringify({
-        model: "deepseek-chat",
+        model: model,
         messages: [
           ...(systemInstruction ? [{ role: "system", content: systemInstruction }] : []),
           { role: "user", content: prompt }
@@ -163,5 +149,5 @@ export async function generateDeepSeekJSON<T>(prompt: string, systemInstruction?
 
     const data = await response.json();
     return JSON.parse(data.choices[0].message.content) as T;
-  });
+  }, deepSeekErrorHandler);
 }
