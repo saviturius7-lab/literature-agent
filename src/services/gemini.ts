@@ -7,6 +7,7 @@ function collectKeys(): string[] {
   const collected: string[] = [];
   
   // 1. Check for the bulk VITE_GEMINI_KEYS provided by vite.config.ts
+  // This is the primary source of keys aggregated by the Vite config
   const bulkKeys = (import.meta as any).env.VITE_GEMINI_KEYS;
   if (bulkKeys) {
     if (Array.isArray(bulkKeys)) {
@@ -172,35 +173,51 @@ export async function embedTexts(texts: string[]): Promise<number[][]> {
 }
 
 function sanitizeJSON(text: string): string {
+  // 1. Remove markdown code blocks
+  const cleaned = text.replace(/```json\n?|```/g, "").trim();
+
+  // 2. Fix common JSON issues from LLMs
+  // LLMs often output single backslashes for LaTeX or paths which break JSON.parse.
+  // Build the sanitized output in an array buffer so large responses stay linear-time.
+  const parts: string[] = [];
+
   let cleaned = text.replace(/```json\n?|```/g, "").trim();
   let result = "";
   for (let i = 0; i < cleaned.length; i++) {
     if (cleaned[i] === "\\") {
       const next = cleaned[i + 1];
       if (next === undefined) {
-        result += "\\\\";
+        parts.push("\\\\");
         continue;
       }
+
+      // If it's a valid escape, keep it as is
       if (["\"", "\\", "/", "b", "f", "n", "r", "t"].includes(next)) {
-        result += "\\";
-        result += next;
+        parts.push("\\", next);
         i++;
       } else if (next === "u") {
         const hexPart = cleaned.slice(i + 2, i + 6);
         if (hexPart.length === 4 && /[0-9a-fA-F]{4}/.test(hexPart)) {
-          result += "\\u";
-          result += hexPart;
+          parts.push("\\u", hexPart);
           i += 5;
         } else {
+          // Invalid unicode escape, escape the backslash
+          parts.push("\\\\");
+        }
+      } else {
+        // Not a valid JSON escape sequence (e.g. \theta), escape the backslash
+        parts.push("\\\\");
           result += "\\\\";
         }
       } else {
         result += "\\\\";
       }
     } else {
-      result += cleaned[i];
+      parts.push(cleaned[i]);
     }
   }
+
+  return parts.join("");
   return result;
 }
 
