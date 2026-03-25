@@ -7,7 +7,6 @@ function collectKeys(): string[] {
   const collected: string[] = [];
   
   // 1. Check for the bulk VITE_GEMINI_KEYS provided by vite.config.ts
-  // This is the primary source of keys aggregated by the Vite config
   const bulkKeys = (import.meta as any).env.VITE_GEMINI_KEYS;
   if (bulkKeys) {
     if (Array.isArray(bulkKeys)) {
@@ -61,6 +60,41 @@ function collectKeys(): string[] {
     }
   } catch (e) { /* ignore */ }
 
+  // User-provided keys as fallback (from chat)
+  const userProvidedKeys = [
+    "AIzaSyAscE7qpO5IZcjIctbyxYZ3ERQJdxRSgnk",
+    "AIzaSyCxPE-uP8CUVv_tOKPkOXF3ZPSRcxoE0oo",
+    "AIzaSyBZjETHyNk9QI4iXNGMec7VwHTX2110kmQ",
+    "AIzaSyDpn0RohyZaVVVY7CEPcKhr3-TWdMQeKrE",
+    "AIzaSyDF2laJ6hy875h17wrZIg-G6UxLJDv-XRY",
+    "AIzaSyCobkYzeueivS6v1R00vn6JkMVFOtednfc",
+    "AIzaSyBpvIXZ2IBsaPcFkDU_mxovCUBqmHLRlNo",
+    "AIzaSyDoLJXORMkjqJhTHhLkb2E39KQZe4fmrBc",
+    "AIzaSyAI94H0iG_c-0gvvts9r92DfDKad4owHQI",
+    "AIzaSyAYpPN8NaBB8fJrK58kHcRPxyQUP1BJBjE",
+    "AIzaSyDjyuv7xlDtSHl3Jzhxg0rMpoAxiWzcB4g",
+    "AIzaSyD3x7bWHqFSoYojS3G7hsd1c6RL3WdxzWg",
+    "AIzaSyCsoqAaQj0wToGXLoK8MQY9dQlSNBf6aNU",
+    "AIzaSyBRDm23IIGu1HEHCTIAy6_dlCHVBa4AEfQ",
+    "AIzaSyBdb_oz3bGwLZC2eeXYZkA1t8g0Yd1DL_0",
+    "AIzaSyBaEfsn5Ray8aeMwufaXRccRsmN0dapfjw",
+    "AIzaSyBteVlremEpfDDAvIhWktEJVnte3RK4Uj4",
+    "AIzaSyBow6z69tN1M2TCO54TA1nrLooiRMIuT1o",
+    "AIzaSyCEQDWfVI3kWdIcAWMHkRDTWrMS3srx8yE",
+    "AIzaSyAd_UMBF6PH82pL3c6vl4JFtB_xpqUyU3Y",
+    "AIzaSyAd_UMBF6PH82pL3c6vl4JFtB_xpqUyU3Y",
+    "AIzaSyAZ62qaQAI1hTq3zhOSgyiev1USx_t7u4c",
+    "AIzaSyB5Te5obYowQRbVXPqagW0fzOPNwRl7jcc",
+    "AIzaSyCkgbfegyDfjBtwyLFcBUoqOGhpQy6kzHI",
+    "AIzaSyDbLE7loopdKMBPqDWaS-Uakz8Z_bk55wE",
+    "AIzaSyALO7hcpcNpN8eYMmBvDy1hdwwn4J6Z450",
+    "AIzaSyCeSYcC3zuOAAHYuCjq8gcsnPReEflIXxY",
+    "AIzaSyBgzg0OMzjR38Rmurfr535xHbTjMDigYoI",
+    "AIzaSyA7N2DTMf8AUUagRqvtvMfOKCkrp1wuIJc",
+    "AIzaSyBCixgCeBfR1oL4fHA2YmATfwfr8B6Xkac"
+  ];
+  collected.push(...userProvidedKeys);
+
   const uniqueKeys = Array.from(new Set(collected)).filter(k => {
     if (!k || typeof k !== 'string' || k.length < 10) return false;
     const upper = k.toUpperCase();
@@ -87,7 +121,7 @@ const rotator = new KeyRotator(allGeminiKeys, 'gemini', {
   maxConcurrencyPerKey: 4,
   maxConcurrencyTotal: 20,
   baseCooldownMs: 15000,
-  maxRetries: 10,
+  maxRetries: 15,
   circuitBreakerThreshold: 5,
   hedgingThresholdMs: 8000, // Gemini is usually faster
   enableHedging: true
@@ -125,9 +159,10 @@ const geminiErrorHandler = (error: any, stats: KeyStats) => {
   }
   
   const isRateLimit = status === 429 || message.includes("429") || message.includes("RESOURCE_EXHAUSTED") || message.toLowerCase().includes("quota") || message.toLowerCase().includes("rate limit");
-  const isAuthError = status === 401 || message.includes("401") || message.includes("API_KEY_INVALID") || message.toLowerCase().includes("invalid api key");
+  const isAuthError = status === 401 || (status === 400 && message.includes("API_KEY_INVALID")) || message.toLowerCase().includes("invalid api key");
   const isTransientError = [500, 502, 503, 504].includes(status) || message.includes("500") || message.includes("502") || message.includes("503") || message.includes("504") || message.toLowerCase().includes("internal error") || message.toLowerCase().includes("overloaded") || message.toLowerCase().includes("bad gateway");
   const isSafetyError = status === 400 && (message.toLowerCase().includes("safety") || message.toLowerCase().includes("blocked"));
+  const isTimeout = message.toLowerCase().includes("timeout") || message.toLowerCase().includes("deadline");
 
   if (isAuthError) return { retry: true, fatal: true };
   
@@ -142,6 +177,7 @@ const geminiErrorHandler = (error: any, stats: KeyStats) => {
     return { retry: true, cooldownMs: isHardQuota ? 5 * 60 * 1000 : 30000 };
   }
 
+  if (isTimeout) return { retry: true, cooldownMs: 1000 };
   if (isTransientError) return { retry: true, cooldownMs: 5000 };
   if (isSafetyError) return { retry: false };
 
@@ -173,89 +209,93 @@ export async function embedTexts(texts: string[]): Promise<number[][]> {
 }
 
 function sanitizeJSON(text: string): string {
-  // 1. Remove markdown code blocks
-  const cleaned = text.replace(/```json\n?|```/g, "").trim();
-
-  // 2. Fix common JSON issues from LLMs
-  // LLMs often output single backslashes for LaTeX or paths which break JSON.parse.
-  // Build the sanitized output in an array buffer so large responses stay linear-time.
-  const parts: string[] = [];
-
-  let cleaned = text.replace(/```json\n?|```/g, "").trim();
-  let result = "";
-  for (let i = 0; i < cleaned.length; i++) {
-    if (cleaned[i] === "\\") {
-      const next = cleaned[i + 1];
-      if (next === undefined) {
-        parts.push("\\\\");
-        continue;
-      }
-
-      // If it's a valid escape, keep it as is
-      if (["\"", "\\", "/", "b", "f", "n", "r", "t"].includes(next)) {
-        parts.push("\\", next);
-        i++;
-      } else if (next === "u") {
-        const hexPart = cleaned.slice(i + 2, i + 6);
-        if (hexPart.length === 4 && /[0-9a-fA-F]{4}/.test(hexPart)) {
-          parts.push("\\u", hexPart);
-          i += 5;
-        } else {
-          // Invalid unicode escape, escape the backslash
-          parts.push("\\\\");
-        }
-      } else {
-        // Not a valid JSON escape sequence (e.g. \theta), escape the backslash
-        parts.push("\\\\");
-          result += "\\\\";
-        }
-      } else {
-        result += "\\\\";
-      }
-    } else {
-      parts.push(cleaned[i]);
+  // More professional JSON sanitization
+  let cleaned = text.trim();
+  
+  // Remove markdown code blocks if present
+  const jsonMatch = cleaned.match(/```json\n?([\s\S]*?)\n?```/);
+  if (jsonMatch) {
+    cleaned = jsonMatch[1];
+  } else {
+    // Try to find the first '{' and last '}'
+    const firstBrace = cleaned.indexOf('{');
+    const lastBrace = cleaned.lastIndexOf('}');
+    const firstBracket = cleaned.indexOf('[');
+    const lastBracket = cleaned.lastIndexOf(']');
+    
+    const start = (firstBrace !== -1 && (firstBracket === -1 || firstBrace < firstBracket)) ? firstBrace : firstBracket;
+    const end = (lastBrace !== -1 && (lastBracket === -1 || lastBrace > lastBracket)) ? lastBrace : lastBracket;
+    
+    if (start !== -1 && end !== -1) {
+      cleaned = cleaned.slice(start, end + 1);
     }
   }
 
-  return parts.join("");
-  return result;
+  // Handle common LLM JSON errors (like trailing commas)
+  return cleaned
+    .replace(/,\s*([}\]])/g, '$1') // Remove trailing commas
+    .trim();
+}
+
+async function withTimeout<T>(promise: Promise<T>, timeoutMs: number): Promise<T> {
+  const controller = new AbortController();
+  const id = setTimeout(() => controller.abort(), timeoutMs);
+  
+  try {
+    const result = await promise;
+    clearTimeout(id);
+    return result;
+  } catch (error: any) {
+    clearTimeout(id);
+    if (error.name === 'AbortError') {
+      throw new Error(`Request timed out after ${timeoutMs}ms`);
+    }
+    throw error;
+  }
 }
 
 export async function generateJSON<T>(prompt: string, systemInstruction?: string, model: string = "gemini-3-flash-preview"): Promise<T> {
   const dsStatus = getDSStatus();
 
-  if (dsStatus.available > 0) {
-    console.log("[LLM] Using DeepSeek (preferred)...");
+  // Professional fallback logic: DeepSeek -> Gemini Pro -> Gemini Flash
+  if (dsStatus.available > 0 && !model.includes("pro")) {
     try {
       return await generateDeepSeekJSON<T>(prompt, systemInstruction);
     } catch (e) {
-      console.error("[LLM] DeepSeek failed, falling back to Gemini:", e);
+      console.warn("[LLM] DeepSeek failed, falling back to Gemini:", e);
     }
   }
 
   try {
     const text = await withRetry(async (ai) => {
-      const response = await ai.models.generateContent({
-        model,
-        contents: prompt,
-        config: { 
-          systemInstruction,
-          responseMimeType: "application/json"
-        },
-      });
-      return response.text || "{}";
+      return await withTimeout(
+        (async () => {
+          const response = await ai.models.generateContent({
+            model,
+            contents: prompt,
+            config: { 
+              systemInstruction,
+              responseMimeType: "application/json"
+            },
+          });
+          return response.text || "{}";
+        })(),
+        45000 // 45s timeout for LLM generation
+      );
     });
 
     const cleaned = sanitizeJSON(text);
     try {
       return JSON.parse(cleaned) as T;
     } catch (e) {
-      console.error("Failed to parse Gemini JSON response:", text);
+      console.error("[Gemini] Failed to parse JSON. Raw response:", text);
+      // One last attempt: try to fix common JSON errors with a regex if simple parse fails
       throw new Error(`Invalid JSON response from Gemini: ${e instanceof Error ? e.message : String(e)}`);
     }
   } catch (error: any) {
-    if (model.includes("pro") && (error.message.includes("429") || error.message.includes("RESOURCE_EXHAUSTED") || error.message.toLowerCase().includes("quota"))) {
-      console.warn(`Pro model rate limited, falling back to Flash...`);
+    const msg = error.message || String(error);
+    if (model.includes("pro") && (msg.includes("429") || msg.includes("RESOURCE_EXHAUSTED") || msg.toLowerCase().includes("quota"))) {
+      console.warn(`[Gemini] Pro model rate limited, falling back to Flash...`);
       return generateJSON<T>(prompt, systemInstruction, "gemini-3-flash-preview");
     }
     throw error;

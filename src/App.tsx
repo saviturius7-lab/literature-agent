@@ -56,33 +56,22 @@ import {
   ExperimentConfig,
   Chunk
 } from './types';
-import { 
-  TopicRefinementAgent,
-  SearchQueryAgent,
-  LiteratureAgent, 
-  SelectionAgent,
-  GapIdentificationAgent,
-  HypothesisAgent, 
-  NoveltyCheckerAgent,
-  ContributionAgent,
-  MathFormalizerAgent,
-  ExperimentDesignAgent,
-  DatasetGeneratorAgent,
-  ExperimentRunner, 
-  ResultValidationAgent,
-  ReviewerSimulatorAgent,
-  RevisionAgent,
-  ReportAgent,
-  VerificationAgent,
-  FactualityEvalAgent,
-  UnifiedPaperAnalyzerAgent
-} from './services/agents';
+import { researchEngine } from './services/researchEngine';
 import { getGeminiStatus, resetGeminiStatus } from './services/gemini';
 import { getDeepSeekStatus, resetDeepSeekStatus } from './services/deepseek';
 
 function cn(...inputs: ClassValue[]) {
   return twMerge(clsx(inputs));
 }
+
+const steps = [
+  { id: 'refining_topic', label: 'Topic', icon: Search },
+  { id: 'searching', label: 'Literature', icon: Search },
+  { id: 'discovering', label: 'Discovery', icon: Lightbulb },
+  { id: 'designing', label: 'Design', icon: BrainCircuit },
+  { id: 'experimenting', label: 'Execution', icon: FlaskConical },
+  { id: 'reporting', label: 'Report', icon: FileText },
+];
 
 export default function App() {
   const [state, setState] = useState<AppState>({
@@ -144,10 +133,6 @@ export default function App() {
   const runResearch = async () => {
     if (!inputTopic.trim()) return;
 
-    let currentIteration = 1;
-    const MAX_ITERATIONS = 3;
-    let isReliable = false;
-
     setState(prev => ({ 
       ...prev, 
       status: 'refining_topic', 
@@ -163,252 +148,34 @@ export default function App() {
       experiment: null,
       reviewerCritiques: [],
       report: null,
-      iteration: currentIteration
+      iteration: 1
     }));
     setSearchingProgress('');
 
     try {
-      // Small delay between steps to avoid hitting rate limits
-      const stepDelay = (ms = 500) => new Promise(resolve => setTimeout(resolve, ms));
-
-      // Clear vector store for new research
-      vectorStore.clear();
-
-      // 1. Topic Selection (Refinement)
-      const refinedTopic = await TopicRefinementAgent.refine(inputTopic);
-      setState(prev => ({ ...prev, topic: refinedTopic }));
-      await stepDelay();
-
-      while (!isReliable && currentIteration <= MAX_ITERATIONS) {
-        setState(prev => ({ ...prev, iteration: currentIteration, status: 'searching' }));
-        setSearchingProgress('Initializing literature search...');
-
-        // 2. Literature Retrieval (REAL papers only)
-        let rawPapers = await LiteratureAgent.fetchPapers(refinedTopic, (msg) => setSearchingProgress(msg));
-        await stepDelay();
-        
-        // If no papers found, try a broader search immediately
-        if (rawPapers.length === 0) {
-          console.log("No papers found with refined topic, trying original input...");
-          setSearchingProgress('No papers found for refined topic. Trying original input...');
-          rawPapers = await LiteratureAgent.fetchPapers(inputTopic, (msg) => setSearchingProgress(msg));
-          await stepDelay();
-        }
-
-        if (rawPapers.length === 0) {
-          throw new Error(`No papers found for "${refinedTopic}" or "${inputTopic}" on arXiv. This can happen if the topic is too niche or the search query is too specific. Try a broader research topic.`);
-        }
-
-        // 3. Unified Analysis (Relevance + Consistency + Verification + Findings)
-        setState(prev => ({ ...prev, status: 'verifying_citations' }));
-        const trulyVerified = await UnifiedPaperAnalyzerAgent.analyze(refinedTopic, rawPapers, (msg) => setSearchingProgress(msg));
-        await stepDelay();
-        
-        if (trulyVerified.length === 0) {
-          // If no papers verified, try a broad fallback
-          if (currentIteration === 1) {
-            console.warn("No papers verified. Retrying with broad search...");
-            const broadKeywords = await SearchQueryAgent.getBroadKeywords(refinedTopic);
-            await stepDelay();
-            const broadPapers = await LiteratureAgent.executeSearch(broadKeywords.join(" "));
-            await stepDelay();
-            const broadVerified = await UnifiedPaperAnalyzerAgent.analyze(refinedTopic, broadPapers, (msg) => setSearchingProgress(msg));
-            await stepDelay();
-            trulyVerified.push(...broadVerified);
-          }
-        }
-
-        if (trulyVerified.length === 0) {
-          throw new Error(`Citation verification failed: No papers could be verified in real-world databases.`);
-        }
-
-        // Add verified chunks to vector store for RAG
-        const allChunks: Chunk[] = [];
-        trulyVerified.forEach(p => {
-          if (p.chunks) allChunks.push(...p.chunks);
-        });
-        if (allChunks.length > 0) {
-          await vectorStore.addDocuments(allChunks.map(c => ({
-            id: `${c.source}-${c.metadata.index}`,
-            text: c.text,
-            metadata: { ...c.metadata, source: c.source }
-          })));
-        }
-
-        // 4. Selection Agent
-        const papers = await SelectionAgent.selectPapers(refinedTopic, trulyVerified);
-        await stepDelay();
-        // We set the state to all trulyVerified papers for the UI
-        setState(prev => ({ ...prev, status: 'identifying_gaps', papers: trulyVerified }));
-
-        // 5. Gap Identification
-        // But we only use the selected (verified) papers for the next steps
-        const gapIdentification = await GapIdentificationAgent.identify(papers, refinedTopic);
-        await stepDelay();
-        setState(prev => ({ ...prev, status: 'hypothesizing', gapIdentification }));
-
-        // 5. Hypothesis Generation
-        let hypothesis = await HypothesisAgent.generateHypothesis(refinedTopic, papers);
-        await stepDelay();
-        
-        // 5b. Novelty Checker (Loop up to 5 times)
-        let noveltyAttempts = 0;
-        const MAX_NOVELTY_ATTEMPTS = 5;
-        let isNovel = false;
-        let noveltyFeedback = "";
-        while (!isNovel && noveltyAttempts < MAX_NOVELTY_ATTEMPTS) {
-          setState(prev => ({ ...prev, status: 'checking_novelty', hypothesis }));
-          const novelty = await NoveltyCheckerAgent.checkNovelty(hypothesis, papers, noveltyAttempts);
-          await stepDelay();
-          isNovel = novelty.isNovel;
-          noveltyFeedback = novelty.feedback || "";
-          
-          if (!isNovel) {
-            console.log(`Hypothesis not novel enough (Attempt ${noveltyAttempts + 1}), regenerating...`);
-            hypothesis = await HypothesisAgent.generateHypothesis(refinedTopic, papers, noveltyFeedback);
-            await stepDelay();
-            noveltyAttempts++;
-          }
-        }
-
-        if (!isNovel) {
-          throw new Error(`Failed to generate a sufficiently novel hypothesis after ${MAX_NOVELTY_ATTEMPTS} attempts.`);
-        }
-
-        // 5c. Contribution Agent
-        setState(prev => ({ ...prev, status: 'extracting_contributions', hypothesis }));
-        const contributions = await ContributionAgent.extractContributions(hypothesis);
-        await stepDelay();
-        setState(prev => ({ ...prev, contributions }));
-
-        // 5d. Math Formalizer
-        setState(prev => ({ ...prev, status: 'formalizing_math' }));
-        const mathFormalization = await MathFormalizerAgent.formalize(hypothesis);
-        await stepDelay();
-        setState(prev => ({ ...prev, mathFormalization }));
-
-        // 6. Experiment Design (constrained)
-        setState(prev => ({ ...prev, status: 'designing_experiment' }));
-        const experimentPlan = await ExperimentDesignAgent.design(hypothesis, contributions);
-        await stepDelay();
-        setState(prev => ({ ...prev, experimentPlan }));
-
-        // 6b. Dataset Generator
-        setState(prev => ({ ...prev, status: 'generating_dataset' }));
-        const datasetCard = await DatasetGeneratorAgent.generate(experimentPlan);
-        await stepDelay();
-        setState(prev => ({ ...prev, datasetCard }));
-
-        // 7. Execution / simulation with limits
-        setState(prev => ({ ...prev, status: 'experimenting' }));
-        const experiment = await ExperimentRunner.runExperiment(hypothesis, experimentPlan, state.experimentConfig);
-        await stepDelay();
-        setState(prev => ({ ...prev, experiment }));
-
-        // 8. Result Validation
-        setState(prev => ({ ...prev, status: 'validating_results' }));
-        const validationResult = await ResultValidationAgent.validate(hypothesis, experiment);
-        await stepDelay();
-        
-        // 8b. Reviewer Simulator
-        setState(prev => ({ ...prev, status: 'reviewing' }));
-        const reviewerCritiques = await ReviewerSimulatorAgent.simulate(hypothesis, experiment);
-        await stepDelay();
-        setState(prev => ({ ...prev, reviewerCritiques }));
-
-        // Check reliability (average rating > 7 AND result validation passed)
-        const avgRating = reviewerCritiques.reduce((acc, c) => acc + c.rating, 0) / reviewerCritiques.length;
-        isReliable = avgRating >= 7 && validationResult.isValid;
-        
-        if (!isReliable && currentIteration < MAX_ITERATIONS) {
-          console.log(`Iteration ${currentIteration} unreliable (Rating: ${avgRating.toFixed(1)}, Valid: ${validationResult.isValid}). Revising...`);
-          
-          // Update hypothesis and experiment with revised versions
-          setState(prev => ({ ...prev, status: 'revising' }));
-          const revision = await RevisionAgent.revise(hypothesis, experiment, reviewerCritiques);
-          await stepDelay();
-          
-          // Update hypothesis and experiment with revised versions
-          hypothesis = revision.revisedHypothesis;
-          const revisedExperiment = revision.revisedResult;
-          
-          currentIteration++;
-          setState(prev => ({ 
-            ...prev, 
-            hypothesis, 
-            experiment: revisedExperiment 
-          }));
-          
-          await new Promise(resolve => setTimeout(resolve, 4000));
-          continue;
-        }
-
-        setState(prev => ({ ...prev, status: 'reporting' }));
-
-        // 9. Writing (last step)
-        const report = await ReportAgent.generateReport(
-          refinedTopic, 
-          papers, 
-          hypothesis, 
-          contributions,
-          mathFormalization,
-          experimentPlan,
-          datasetCard,
-          experiment, 
-          reviewerCritiques
-        );
-        await stepDelay();
-
-        // 6. Verification Agent
-        setState(prev => ({ ...prev, status: 'verifying_report', report }));
-        const verification = await VerificationAgent.verifyReport(report, papers);
-        
-        // 7. Factuality Evaluation (Judge LLM)
-        const factualityResult = await FactualityEvalAgent.evaluate(report, papers);
-        
-        if (!verification.isValid || !factualityResult.isPassed) {
-          console.warn("Report verification or factuality evaluation failed:", verification.issues, factualityResult.unsupportedClaims);
-          
-          if (currentIteration < MAX_ITERATIONS) {
-             console.log("Retrying iteration due to verification/factuality failure...");
-             currentIteration++;
-             continue;
-          }
-        }
-
-        setState(prev => ({ 
-          ...prev, 
-          status: 'completed', 
-          report,
-          factualityResult
-        }));
-        break;
-      }
-
-      if (!isReliable && currentIteration > MAX_ITERATIONS) {
-        setState(prev => ({ ...prev, status: 'completed', error: "Max iterations reached without achieving full reliability. Final report generated based on best attempt." }));
-      }
-
+      await researchEngine.run(
+        inputTopic,
+        state.experimentConfig,
+        (updates) => setState(prev => ({ ...prev, ...updates })),
+        (msg) => setSearchingProgress(msg)
+      );
     } catch (err: any) {
       console.error("Research workflow error:", err);
-      let displayError = err.message || String(err);
+      let displayError = "";
       
-      // Try to parse JSON error messages from LLM providers
-      if (displayError.includes('{') && displayError.includes('}')) {
-        try {
-          const start = displayError.indexOf('{');
-          const end = displayError.lastIndexOf('}') + 1;
-          const jsonStr = displayError.substring(start, end);
-          const parsed = JSON.parse(jsonStr);
-          
-          if (parsed.error && parsed.error.message) {
-            displayError = parsed.error.message;
-          } else if (parsed.message) {
-            displayError = parsed.message;
+      if (typeof err === 'string') {
+        displayError = err;
+      } else if (err && typeof err === 'object') {
+        displayError = err.message || err.error?.message || err.error || "";
+        if (!displayError || displayError === "[object Object]") {
+          try {
+            displayError = JSON.stringify(err);
+          } catch (e) {
+            displayError = String(err);
           }
-        } catch (e) {
-          // Not JSON or parse failed, keep original
         }
+      } else {
+        displayError = String(err);
       }
       
       setState(prev => ({ ...prev, status: 'error', error: displayError }));
@@ -496,28 +263,14 @@ ${(state.report.references || []).map(ref => `- ${ref}`).join('\n')}
     html2pdf().set(opt).from(element).save();
   };
 
-  const steps = [
-    { id: 'refining_topic', label: 'Topic Selection', icon: Search },
-    { id: 'searching', label: 'Literature Retrieval', icon: Search },
-    { id: 'verifying_citations', label: 'Citation Verification', icon: ClipboardCheck },
-    { id: 'extracting_findings', label: 'Key Findings', icon: Lightbulb },
-    { id: 'identifying_gaps', label: 'Gap Identification', icon: Lightbulb },
-    { id: 'hypothesizing', label: 'Hypothesis Generation', icon: Lightbulb },
-    { id: 'designing_experiment', label: 'Experiment Design', icon: BrainCircuit },
-    { id: 'experimenting', label: 'Execution', icon: FlaskConical },
-    { id: 'validating_results', label: 'Result Validation', icon: ClipboardCheck },
-    { id: 'reporting', label: 'Writing', icon: FileText },
-  ];
-
-  const currentStepIndex = steps.findIndex(s => {
-    if (state.status === 'filtering_relevance') return s.id === 'searching';
-    if (state.status === 'extracting_findings') return s.id === 'extracting_findings';
-    if (state.status === 'checking_novelty' || state.status === 'extracting_contributions') return s.id === 'hypothesizing';
-    if (state.status === 'formalizing_math' || state.status === 'generating_dataset') return s.id === 'designing_experiment';
-    if (state.status === 'reviewing' || state.status === 'revising') return s.id === 'validating_results';
-    if (state.status === 'verifying_report') return s.id === 'reporting';
+  const currentStepIndex = React.useMemo(() => steps.findIndex(s => {
+    if (state.status === 'verifying_citations') return s.id === 'searching';
+    if (state.status === 'identifying_gaps' || state.status === 'hypothesizing' || state.status === 'checking_novelty' || state.status === 'discovering') return s.id === 'discovering';
+    if (state.status === 'designing_experiment' || state.status === 'formalizing_math' || state.status === 'generating_dataset' || state.status === 'designing') return s.id === 'designing';
+    if (state.status === 'validating_results' || state.status === 'reviewing' || state.status === 'revising' || state.status === 'experimenting') return s.id === 'experimenting';
+    if (state.status === 'verifying_report' || state.status === 'reporting') return s.id === 'reporting';
     return s.id === state.status;
-  });
+  }), [state.status]);
   const isCompleted = state.status === 'completed';
 
   return (
@@ -553,9 +306,9 @@ ${(state.report.references || []).map(ref => `- ${ref}`).join('\n')}
                 onClick={runResearch}
                 disabled={(state.status !== 'idle' && state.status !== 'completed' && state.status !== 'error') || (geminiStatus.available === 0 && deepseekStatus.available === 0)}
                 className="absolute right-1 top-1 bottom-1 px-4 bg-pink-deep text-white rounded-full text-xs font-bold uppercase tracking-widest hover:bg-pink-deep/90 transition-colors disabled:opacity-50"
-                title={(geminiStatus.available === 0 && deepseekStatus.available === 0) ? "No provider keys available. Check your configured keys in Settings -> Secrets." : ""}
+                title={(geminiStatus.available === 0 && deepseekStatus.available === 0) ? "No API keys available. Check your Gemini or DeepSeek keys in Settings -> Secrets." : ""}
               >
-                {state.status === 'idle' || isCompleted || state.status === 'error' ? 'Run Research' : 'Running...'}
+                {state.status === 'idle' || isCompleted || state.status === 'error' ? 'Start' : 'Running...'}
               </button>
             </div>
           </div>
@@ -602,7 +355,7 @@ ${(state.report.references || []).map(ref => `- ${ref}`).join('\n')}
               <h2 className="text-xs font-bold uppercase tracking-widest text-pink-pale/40 mb-4">Agent Status</h2>
               <div className="space-y-4">
                 {state.status === 'idle' && (
-                  <p className="text-sm text-pink-pale/60 italic">Enter a topic to begin the research workflow.</p>
+                  <p className="text-sm text-pink-pale/60 italic">Enter a topic to begin the multi-agent research workflow.</p>
                 )}
                 {state.status !== 'idle' && (
                   <div className="space-y-3">
@@ -624,7 +377,7 @@ ${(state.report.references || []).map(ref => `- ${ref}`).join('\n')}
                     {(geminiStatus.total > 0 || deepseekStatus.total > 0) && (
                       <div className="pl-7 pt-2 border-t border-pink-pale/5 mt-2 space-y-2">
                         <div className="flex items-center justify-between mb-2">
-                          <span className="text-[9px] uppercase tracking-widest font-bold text-pink-pale/20">Provider Infrastructure</span>
+                          <span className="text-[9px] uppercase tracking-widest font-bold text-pink-pale/20">API Infrastructure</span>
                           <button 
                             onClick={handleResetAPI}
                             className="text-[8px] uppercase tracking-widest font-bold text-pink-deep hover:text-pink-deep/80 transition-colors flex items-center gap-1"
@@ -636,7 +389,7 @@ ${(state.report.references || []).map(ref => `- ${ref}`).join('\n')}
                         {deepseekStatus.total > 0 && (
                           <div>
                             <div className="flex items-center justify-between text-[9px] uppercase tracking-wider mb-1">
-                              <span className="text-pink-pale/40">Primary Provider Status</span>
+                              <span className="text-pink-pale/40">DeepSeek Status (Preferred)</span>
                               <span className={cn(
                                 "font-bold",
                                 deepseekStatus.available > 0 ? "text-emerald-500" : "text-amber-500"
@@ -655,7 +408,7 @@ ${(state.report.references || []).map(ref => `- ${ref}`).join('\n')}
                         {geminiStatus.total > 0 && (
                           <div>
                             <div className="flex items-center justify-between text-[9px] uppercase tracking-wider mb-1">
-                              <span className="text-pink-pale/40">Fallback Provider Status</span>
+                              <span className="text-pink-pale/40">Gemini Status (Fallback)</span>
                               <span className={cn(
                                 "font-bold",
                                 geminiStatus.available > 0 ? "text-emerald-500" : "text-amber-500"
@@ -678,7 +431,7 @@ ${(state.report.references || []).map(ref => `- ${ref}`).join('\n')}
 
                         {geminiStatus.totalRetries > 0 && (
                           <p className="text-[8px] text-pink-pale/30">
-                            Total Provider Retries: {geminiStatus.totalRetries}
+                            Total API Retries: {geminiStatus.totalRetries}
                           </p>
                         )}
                       </div>
@@ -697,7 +450,7 @@ ${(state.report.references || []).map(ref => `- ${ref}`).join('\n')}
                     {(state.error.includes("API key") || state.error.includes("PERMISSION_DENIED") || state.error.includes("Balance") || state.error.includes("Unauthorized") || state.error.includes("RESOURCE_EXHAUSTED") || state.error.includes("429") || state.error.includes("quota") || state.error.includes("hard quota")) && (
                       <div className="p-3 bg-dark-bg/50 rounded-lg border border-pink-deep/10">
                         <div className="flex items-center justify-between mb-2">
-                          <p className="text-[9px] text-pink-deep font-bold uppercase tracking-wider">Troubleshooting:</p>
+                          <p className="text-[9px] text-pink-deep font-bold uppercase tracking-wider">Troubleshooting Advice:</p>
                           <button 
                             onClick={handleResetAPI}
                             className="text-[8px] px-2 py-1 bg-pink-deep/10 border border-pink-deep/20 rounded-md text-pink-deep font-bold uppercase tracking-widest hover:bg-pink-deep/20 transition-all"
@@ -706,19 +459,16 @@ ${(state.report.references || []).map(ref => `- ${ref}`).join('\n')}
                           </button>
                         </div>
                         <p className="text-[10px] text-pink-pale/60 leading-relaxed">
-                          It looks like there's an issue with your provider keys, account balance, or rate limits. 
+                          It looks like there's an issue with your API keys, account balance, or rate limits. 
                           The app is automatically rotating through your keys, but you may need to:
                         </p>
                         <ul className="text-[10px] text-pink-pale/40 mt-2 list-disc list-inside space-y-1">
-                          <li>Ensure your primary provider keys are configured and still active.</li>
-                          <li>Add primary provider keys with <strong>VITE_DEEPSEEK_API_KEY_1</strong> (up to 10) for stronger throughput.</li>
-                          <li>The app <strong>automatically switches to the fallback provider</strong> when the primary pool is exhausted or rate-limited.</li>
                           <li>DeepSeek is now the <strong>preferred provider</strong> for research tasks.</li>
                           <li>Add DeepSeek keys as <strong>VITE_DEEPSEEK_API_KEY_1</strong> (up to 10) for maximum performance.</li>
                           <li>The app <strong>automatically falls back to Gemini</strong> if DeepSeek keys are exhausted or rate-limited.</li>
                           <li>If you see "authentication fails" or "user not found", your DeepSeek/OpenRouter key is invalid. Please update it in Settings &rarr; Secrets.</li>
                           <li>Ensure <strong>VITE_GEMINI_API_KEY_1</strong> (up to 32) are valid for reliable fallback support.</li>
-                          <li>If you see "hard quota" errors, a fallback key likely reached its plan limit. Add more keys or wait for the 5-minute cooldown.</li>
+                          <li>If you see "hard quota" errors, your Gemini key has likely reached its free tier limit or billing cap. You can try adding more keys or wait for the 5-minute cooldown.</li>
                         </ul>
                       </div>
                     )}
@@ -1746,40 +1496,65 @@ ${(state.report.references || []).map(ref => `- ${ref}`).join('\n')}
               <span className="text-[10px] uppercase tracking-widest font-bold">Literature Agent v1.1</span>
             </div>
             
-            {/* Provider Status Monitor */}
-            <div className="flex items-center gap-4 px-4 py-1.5 bg-black/20 rounded-full border border-pink-pale/5">
-              <div className="flex items-center gap-1.5">
-                <div className={cn(
-                  "w-1.5 h-1.5 rounded-full animate-pulse",
-                  (deepseekStatus.available > 0 || geminiStatus.available > 0) ? "bg-emerald-500" : "bg-red-500"
-                )} />
-                <span className="text-[9px] uppercase tracking-widest font-bold text-pink-pale/40">Provider Status</span>
+            {/* API Status Monitors */}
+            <div className="flex flex-wrap items-center gap-4 px-5 py-2 bg-black/30 rounded-full border border-pink-pale/5 backdrop-blur-md">
+              {/* Gemini */}
+              <div className="flex items-center gap-3 border-r border-pink-pale/10 pr-4">
+                <div className="flex items-center gap-1.5">
+                  <div className={cn(
+                    "w-1.5 h-1.5 rounded-full shadow-[0_0_8px_rgba(16,185,129,0.5)]",
+                    geminiStatus.available > 0 ? "bg-emerald-500 animate-pulse" : "bg-red-500"
+                  )} />
+                  <span className="text-[9px] uppercase tracking-widest font-bold text-pink-pale/40">Gemini</span>
+                </div>
+                <div className="flex items-center gap-2 text-[9px] font-mono text-pink-pale/60">
+                  <span title="Available" className="hover:text-emerald-400 transition-colors cursor-help">A:{geminiStatus.available}</span>
+                  <span title="Cooling" className={cn("transition-colors cursor-help", geminiStatus.coolingDown > 0 ? "text-amber-400" : "hover:text-amber-400")}>C:{geminiStatus.coolingDown}</span>
+                  <span title="Failed" className={cn("transition-colors cursor-help", geminiStatus.failed > 0 ? "text-red-400" : "hover:text-red-400")}>F:{geminiStatus.failed}</span>
+                  <span title="Total" className="hover:text-pink-pale transition-colors cursor-help">T:{geminiStatus.total}</span>
+                  <button 
+                    onClick={() => {
+                      resetGeminiStatus();
+                      setGeminiStatus(getGeminiStatus());
+                    }}
+                    className="p-1 rounded hover:bg-pink-pale/10 text-pink-pale/30 hover:text-pink-pale/80 transition-all active:scale-90"
+                    title="Reset Gemini Rotation"
+                  >
+                    <RefreshCw className="w-2.5 h-2.5" />
+                  </button>
+                </div>
               </div>
-              <div className="flex items-center gap-3 text-[9px] font-mono text-pink-pale/60">
-                <span title="Available Primary Provider Keys">P: {deepseekStatus.available}/{deepseekStatus.total}</span>
-                <span title="Available Fallback Provider Keys">F: {geminiStatus.available}/{geminiStatus.total}</span>
-                <span title="Cooling Down Fallback Keys" className={geminiStatus.coolingDown > 0 ? "text-amber-400" : ""}>COOL: {geminiStatus.coolingDown}</span>
-                <span title="Failed Fallback Keys" className={geminiStatus.failed > 0 ? "text-red-400" : ""}>FAIL: {geminiStatus.failed}</span>
-                {geminiStatus.totalRetries > 0 && (
-                  <span title="Total Retries" className="text-pink-deep/60 animate-pulse">RETRIES: {geminiStatus.totalRetries}</span>
-                )}
-                <button 
-                  onClick={() => {
-                    resetDeepSeekStatus();
-                    resetGeminiStatus();
-                    setDeepseekStatus(getDeepSeekStatus());
-                    setGeminiStatus(getGeminiStatus());
-                  }}
-                  className="ml-2 p-1 rounded hover:bg-pink-pale/10 text-pink-pale/40 hover:text-pink-pale/80 transition-colors"
-                  title="Reset provider rotation and clear all failures/cooldowns"
-                >
-                  <RefreshCw className="w-2.5 h-2.5" />
-                </button>
+
+              {/* DeepSeek */}
+              <div className="flex items-center gap-3">
+                <div className="flex items-center gap-1.5">
+                  <div className={cn(
+                    "w-1.5 h-1.5 rounded-full shadow-[0_0_8px_rgba(16,185,129,0.5)]",
+                    deepseekStatus.available > 0 ? "bg-emerald-500 animate-pulse" : "bg-red-500"
+                  )} />
+                  <span className="text-[9px] uppercase tracking-widest font-bold text-pink-pale/40">DeepSeek</span>
+                </div>
+                <div className="flex items-center gap-2 text-[9px] font-mono text-pink-pale/60">
+                  <span title="Available" className="hover:text-emerald-400 transition-colors cursor-help">A:{deepseekStatus.available}</span>
+                  <span title="Cooling" className={cn("transition-colors cursor-help", deepseekStatus.coolingDown > 0 ? "text-amber-400" : "hover:text-amber-400")}>C:{deepseekStatus.coolingDown}</span>
+                  <span title="Failed" className={cn("transition-colors cursor-help", deepseekStatus.failed > 0 ? "text-red-400" : "hover:text-red-400")}>F:{deepseekStatus.failed}</span>
+                  <span title="Total" className="hover:text-pink-pale transition-colors cursor-help">T:{deepseekStatus.total}</span>
+                  <button 
+                    onClick={() => {
+                      resetDeepSeekStatus();
+                      setDeepseekStatus(getDeepSeekStatus());
+                    }}
+                    className="p-1 rounded hover:bg-pink-pale/10 text-pink-pale/30 hover:text-pink-pale/80 transition-all active:scale-90"
+                    title="Reset DeepSeek Rotation"
+                  >
+                    <RefreshCw className="w-2.5 h-2.5" />
+                  </button>
+                </div>
               </div>
             </div>
           </div>
           <p className="text-[10px] text-pink-pale/40 uppercase tracking-widest font-bold">
-            Grounded with provider APIs & arXiv
+            Powered by Gemini 3.1 & arXiv API
           </p>
         </div>
       </footer>

@@ -107,9 +107,10 @@ class TabularPredictor {
     
     // Use meta-learner for final prediction
     const metaPredMatrix = this.metaLearner.predict(metaXMatrix);
+    const metaPredArray = metaPredMatrix.to1DArray();
     
     if (this.dataType === 'classification') {
-      return metaPredMatrix.map((v: number) => v > 0.5 ? 1 : 0);
+      return metaPredArray.map((v: number) => v > 0.5 ? 1 : 0);
     } else {
       // For regression, we'll use a weighted average of base models for simplicity in this simulation
       const finalPred: number[] = [];
@@ -153,9 +154,9 @@ class TabularPredictor {
   
     const url = `https://export.arxiv.org/api/query?search_query=${encodeURIComponent(query as string)}&start=0&max_results=30&sortBy=relevance&sortOrder=descending`;
     
-    // 10s timeout for ArXiv
+    // 12s timeout for upstream ArXiv
     const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 10000);
+    const timeoutId = setTimeout(() => controller.abort(), 12000);
 
     try {
       const response = await fetch(url, {
@@ -166,7 +167,8 @@ class TabularPredictor {
       clearTimeout(timeoutId);
 
       if (!response.ok) {
-        return res.status(response.status).json({ error: `ArXiv API error: ${response.status}` });
+        console.error(`[ArXiv Proxy] Upstream error: ${response.status} for query: ${query}`);
+        return res.status(response.status).json({ error: `ArXiv API returned ${response.status}` });
       }
   
       const data = await response.text();
@@ -175,8 +177,10 @@ class TabularPredictor {
     } catch (error: any) {
       clearTimeout(timeoutId);
       if (error.name === 'AbortError') {
+        console.error(`[ArXiv Proxy] Upstream timeout for query: ${query}`);
         res.status(504).json({ error: "ArXiv API request timed out" });
       } else {
+        console.error(`[ArXiv Proxy] Error:`, error);
         res.status(500).json({ error: "Failed to fetch from arXiv" });
       }
     }

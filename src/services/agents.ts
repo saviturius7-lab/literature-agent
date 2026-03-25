@@ -18,6 +18,7 @@ import {
 } from "../types";
 import { generateJSON, embedText, embedTexts } from "./gemini";
 import { vectorStore } from "./vectorStore";
+import { apiClient } from "./apiClient";
 
 const parser = new XMLParser();
 
@@ -38,7 +39,7 @@ function cosineSimilarity(a: number[], b: number[]): number {
 export const TopicRefinementAgent = {
   async refine(topic: string): Promise<string> {
     const prompt = `Refine the following research topic into a specific, high-impact research question suitable for a scientific paper.
-    Avoid overly broad topics. Focus on a specific niche.
+    Avoid overly broad topics. Focus on a specific niche in AI/ML.
     
     Initial Topic: "${topic}"
     
@@ -47,8 +48,13 @@ export const TopicRefinementAgent = {
       "refinedTopic": "Specific research question or title"
     }`;
     
-    const result = await generateJSON<{ refinedTopic: string }>(prompt, "You are a senior research scientist who specializes in defining high-impact research directions.");
-    return result.refinedTopic || topic;
+    try {
+      const result = await generateJSON<{ refinedTopic: string }>(prompt, "You are a senior research scientist who specializes in defining high-impact research directions.");
+      return result.refinedTopic || topic;
+    } catch (error) {
+      console.error("[TopicRefinementAgent] Failed to refine topic, using original:", error);
+      return topic;
+    }
   }
 };
 
@@ -100,50 +106,6 @@ export const SearchQueryAgent = {
   }
 };
 
-async function fetchWithRetry(url: string, retries = 3, backoff = 1500): Promise<Response> {
-  const timeout = 10000; // 10s timeout for ArXiv
-  
-  for (let i = 0; i < retries; i++) {
-    const controller = new AbortController();
-    const id = setTimeout(() => controller.abort(), timeout);
-    
-    try {
-      const response = await fetch(url, { signal: controller.signal });
-      clearTimeout(id);
-      
-      if (response.status === 429 && i < retries - 1) {
-        const waitTime = backoff * Math.pow(2, i) + (Math.random() * 500);
-        console.warn(`ArXiv API rate limited (429). Retrying in ${Math.round(waitTime)}ms... (Attempt ${i + 1}/${retries})`);
-        await new Promise(resolve => setTimeout(resolve, waitTime));
-        continue;
-      }
-      
-      if (response.status >= 500 && i < retries - 1) {
-        const waitTime = backoff * Math.pow(1.5, i);
-        console.warn(`ArXiv API server error (${response.status}). Retrying in ${Math.round(waitTime)}ms...`);
-        await new Promise(resolve => setTimeout(resolve, waitTime));
-        continue;
-      }
-
-      return response;
-    } catch (error: any) {
-      clearTimeout(id);
-      if (error.name === 'AbortError') {
-        console.warn(`ArXiv API request timed out (${timeout}ms). Retrying... (Attempt ${i + 1}/${retries})`);
-      } else {
-        console.warn(`ArXiv API request failed: ${error.message}. Retrying... (Attempt ${i + 1}/${retries})`);
-      }
-      
-      if (i < retries - 1) {
-        await new Promise(resolve => setTimeout(resolve, backoff));
-        continue;
-      }
-      throw error;
-    }
-  }
-  return fetch(url); // Final attempt
-}
-
 export const LiteratureAgent = {
   async fetchPapers(topic: string, onProgress?: (msg: string) => void): Promise<Paper[]> {
     const allPapers: Paper[] = [];
@@ -160,55 +122,38 @@ export const LiteratureAgent = {
     };
 
     try {
-      // 1. Start Refined Query Generation, Broad Keywords, and Initial Topic Search ALL in parallel
-      onProgress?.("Initializing multi-strategy literature search...");
+      // 1. Start ALL search strategies in parallel for maximum speed
+      onProgress?.("Initializing aggressive multi-strategy literature search...");
       
-      const [refinedQuery, initialTopicPapers, broadKeywords] = await Promise.all([
+      const [refinedQuery, broadKeywords] = await Promise.all([
         SearchQueryAgent.refineQuery(topic),
-        this.executeSearch(topic).catch(e => {
-          console.error("Initial search failed:", e);
-          return [];
-        }),
-        SearchQueryAgent.getBroadKeywords(topic).catch(e => {
-          console.error("Broad keywords generation failed:", e);
-          return [];
-        })
+        SearchQueryAgent.getBroadKeywords(topic).catch(() => [])
       ]);
 
-      addPapers(initialTopicPapers);
-      console.log(`Search Strategy (Original Topic): Found ${initialTopicPapers.length} papers`);
-      onProgress?.(`Initial search found ${initialTopicPapers.length} papers. Refining...`);
+      onProgress?.(`Searching ArXiv with ${broadKeywords.length + 2} parallel strategies...`);
+      
+      const searchStrategies = [
+        topic,
+        refinedQuery,
+        ...broadKeywords
+      ];
 
-      // 2. Execute Refined Search and Keyword Searches in parallel
-      console.log(`Search Strategy (Refined): "${refinedQuery}"`);
-      onProgress?.(`Searching ArXiv with refined query and ${broadKeywords.length} keywords...`);
-      
-      const refinedSearchPromise = this.executeSearch(refinedQuery).catch(e => {
-        console.error("Refined search failed:", e);
-        return [];
-      });
-      
-      const keywordSearchPromises = broadKeywords.map(keyword => 
-        this.executeSearch(keyword).catch(e => {
-          console.error(`Keyword search failed for "${keyword}":`, e);
-          return [];
-        })
+      const searchResults = await Promise.all(
+        searchStrategies.map(query => 
+          this.executeSearch(query).catch(e => {
+            console.error(`Search failed for "${query}":`, e);
+            return [];
+          })
+        )
       );
-      
-      const [refinedPapers, ...keywordResults] = await Promise.all([
-        refinedSearchPromise,
-        ...keywordSearchPromises
-      ]);
-      
-      addPapers(refinedPapers);
-      keywordResults.forEach(results => addPapers(results));
-      
+
+      searchResults.forEach(papers => addPapers(papers));
       console.log(`Multi-strategy search complete. Found ${allPapers.length} unique papers.`);
 
-      // 3. General fallback if still desperate
+      // 3. General AI/ML fallback if still desperate
       if (allPapers.length < 5) {
-        onProgress?.("Applying broader fallback search...");
-        const fallbackQueries = ["machine learning", "neural networks", "deep learning"];
+        onProgress?.("Applying general AI/ML fallback search...");
+        const fallbackQueries = ["machine learning", "artificial intelligence", "deep learning"];
         const fallbackResults = await Promise.all(fallbackQueries.map(q => this.executeSearch(q).catch(e => [])));
         fallbackResults.forEach(results => addPapers(results));
       }
@@ -226,12 +171,12 @@ export const LiteratureAgent = {
     const url = `/api/arxiv?q=${encodeURIComponent(query)}`;
     
     try {
-      const response = await fetchWithRetry(url);
-      if (!response.ok) {
-        console.warn(`ArXiv search failed for query "${query}": ${response.status}`);
-        return [];
-      }
-      const xmlData = await response.text();
+      const xmlData = await apiClient.get<string>(url, {
+        timeout: 15000,
+        retries: 3,
+        backoff: 2000
+      });
+      
       const jsonObj = parser.parse(xmlData);
       
       if (!jsonObj || !jsonObj.feed || !jsonObj.feed.entry) {
@@ -272,8 +217,6 @@ export const LiteratureAgent = {
 
 export const UnifiedPaperAnalyzerAgent = {
   async verifyWithOpenAlex(title: string, authors: string[] = []): Promise<boolean> {
-    const timeout = 10000; // 10s timeout for OpenAlex
-    
     try {
       // Clean title for search: remove punctuation, lowercase, and take first 100 chars
       const cleanTitle = title.replace(/[^\w\s]/gi, '').toLowerCase().trim();
@@ -281,16 +224,12 @@ export const UnifiedPaperAnalyzerAgent = {
       // Strategy 1: Title Search
       const titleUrl = `https://api.openalex.org/works?filter=title.search:${encodeURIComponent(cleanTitle.slice(0, 100))}&mailto=saviturius7@gmail.com`;
       
-      const controller = new AbortController();
-      const id = setTimeout(() => controller.abort(), timeout);
-      
       try {
-        const response = await fetch(titleUrl, { signal: controller.signal });
-        clearTimeout(id);
-        
-        if (!response.ok) return false;
-        
-        const data = await response.json();
+        const data = await apiClient.get<any>(titleUrl, {
+          timeout: 12000,
+          retries: 2,
+          backoff: 1000
+        });
         
         if (data.results && data.results.length > 0) {
           // Check top 3 results for a match
@@ -313,8 +252,7 @@ export const UnifiedPaperAnalyzerAgent = {
           }
         }
       } catch (e) {
-        clearTimeout(id);
-        console.warn("OpenAlex title search error or timeout:", e);
+        console.warn("OpenAlex title search error:", e);
       }
       
       // Strategy 2: Author + Year (if title search failed)
@@ -323,25 +261,21 @@ export const UnifiedPaperAnalyzerAgent = {
         if (firstAuthor) {
           const authorUrl = `https://api.openalex.org/works?filter=author.search:${encodeURIComponent(firstAuthor)}&mailto=saviturius7@gmail.com`;
           
-          const authController = new AbortController();
-          const authId = setTimeout(() => authController.abort(), timeout);
-          
           try {
-            const authResponse = await fetch(authorUrl, { signal: authController.signal });
-            authId && clearTimeout(authId);
+            const authData = await apiClient.get<any>(authorUrl, {
+              timeout: 12000,
+              retries: 2,
+              backoff: 1000
+            });
             
-            if (authResponse.ok) {
-              const authData = await authResponse.json();
-              for (const result of authData.results || []) {
-                const resultTitle = result.display_name.toLowerCase().replace(/[^\w\s]/gi, '').trim();
-                if (resultTitle.includes(cleanTitle.slice(0, 20)) || cleanTitle.includes(resultTitle.slice(0, 20))) {
-                  return true;
-                }
+            for (const result of authData.results || []) {
+              const resultTitle = result.display_name.toLowerCase().replace(/[^\w\s]/gi, '').trim();
+              if (resultTitle.includes(cleanTitle.slice(0, 20)) || cleanTitle.includes(resultTitle.slice(0, 20))) {
+                return true;
               }
             }
           } catch (e) {
-            authId && clearTimeout(authId);
-            console.warn("OpenAlex author search error or timeout:", e);
+            console.warn("OpenAlex author search error:", e);
           }
         }
       }
@@ -393,31 +327,34 @@ export const UnifiedPaperAnalyzerAgent = {
 
     onProgress?.(`Analyzing ${papers.length} papers for relevance, consistency, and findings...`);
     
-    const batchSize = 8;
+    const batchSize = 5; // Smaller batch size for better reliability
     const analyzedPapers: Paper[] = [];
     
-    // Process in parallel batches for speed
-    const batchPromises = [];
+    // Process batches sequentially to avoid overwhelming APIs
     for (let i = 0; i < papers.length; i += batchSize) {
       const batch = papers.slice(i, i + batchSize);
-      batchPromises.push(this.analyzeBatch(topic, batch).then(results => ({ offset: i, results, batch })));
-    }
+      const batchIndex = Math.floor(i/batchSize) + 1;
+      const totalBatches = Math.ceil(papers.length/batchSize);
+      
+      onProgress?.(`Analyzing batch ${batchIndex}/${totalBatches}...`);
+      
+      try {
+        const results = await this.analyzeBatch(topic, batch);
+        
+        // OpenAlex verification can be parallelized within the batch
+        const openAlexResults = await Promise.all(batch.map(p => this.verifyWithOpenAlex(p.title, p.authors)));
 
-    const allBatchResults = await Promise.all(batchPromises);
-    
-    for (const { offset, results, batch } of allBatchResults) {
-      // OpenAlex verification is still per-paper, but we can parallelize it for the batch
-      const openAlexPromises = batch.map(p => this.verifyWithOpenAlex(p.title, p.authors));
-      const openAlexResults = await Promise.all(openAlexPromises);
-
-      results.forEach((res, idx) => {
-        const paper = batch[idx];
-        if (paper && res.isRelevant && res.isConsistent && openAlexResults[idx]) {
-          paper.keyFindings = res.keyFindings;
-          paper.verified = true;
-          analyzedPapers.push(paper);
-        }
-      });
+        results.forEach((res, idx) => {
+          const paper = batch[idx];
+          if (paper && res.isRelevant && res.isConsistent && openAlexResults[idx]) {
+            paper.keyFindings = res.keyFindings;
+            paper.verified = true;
+            analyzedPapers.push(paper);
+          }
+        });
+      } catch (e) {
+        console.error(`Batch ${batchIndex} failed:`, e);
+      }
     }
 
     onProgress?.(`Analysis complete. ${analyzedPapers.length} high-quality papers retained.`);
@@ -496,34 +433,6 @@ export const ChunkingAgent = {
   }
 };
 
-export const GapIdentificationAgent = {
-  async identify(papers: Paper[], topic: string): Promise<GapIdentification> {
-    const papersContext = papers.map((p, i) => {
-      const chunksInfo = p.chunks 
-        ? p.chunks.map(c => `[Section: ${c.section}] ${c.text}`).join("\n")
-        : p.summary;
-      return `[${i+1}] ${p.title}:\n${chunksInfo}`;
-    }).join("\n\n");
-
-    const prompt = `Analyze the following research papers on "${topic}" and identify 3 critical research gaps.
-    For each gap, provide specific evidence from the papers (refer to them as [1], [2], etc. and specify the section if available) and explain the potential impact of addressing it.
-    
-    Papers:
-    ${papersContext}
-    
-    Return a JSON object:
-    {
-      "gaps": [
-        { "description": "...", "evidence": "...", "potentialImpact": "..." },
-        ...
-      ],
-      "summary": "Overall summary of the research landscape gaps"
-    }`;
-    
-    return generateJSON<GapIdentification>(prompt, "You are an expert at identifying missing links and future directions in scientific literature.");
-  }
-};
-
 export const SelectionAgent = {
   async selectPapers(topic: string, papers: Paper[]): Promise<Paper[]> {
     const prompt = `From the following list of research papers about "${topic}", select the 8 most foundational, seminal, or high-impact papers. 
@@ -542,56 +451,6 @@ export const SelectionAgent = {
     const selectedIndices = result.selectedIndices || [];
     const uniqueIndices = Array.from(new Set(selectedIndices));
     return uniqueIndices.map(idx => papers[idx]).filter(p => !!p);
-  }
-};
-
-export const HypothesisAgent = {
-  async generateHypothesis(topic: string, papers: Paper[], feedback?: string): Promise<Hypothesis> {
-    // RAG: Retrieve relevant chunks from vector store
-    const relevantChunks = await vectorStore.search(topic, 10);
-    const ragContext = relevantChunks.map(c => `[Source: ${c.metadata.source}] ${c.text}`).join("\n\n");
-
-    const papersContext = papers.map((p, i) => {
-      const chunksInfo = p.chunks 
-        ? p.chunks.map(c => `[Section: ${c.section}] ${c.text}`).join("\n")
-        : p.summary;
-      return `Paper [${i+1}]: ${p.title}\n${chunksInfo}`;
-    }).join("\n\n");
-
-    // Unified Step: Generate and Self-Verify in one go
-    const prompt = `Based STRICTLY on the following research papers and retrieved context about "${topic}", propose a novel research hypothesis.
-    
-    Retrieved Context (RAG):
-    ${ragContext}
-
-    Papers:
-    ${papersContext}
-    
-    ${feedback ? `PREVIOUS ATTEMPT FEEDBACK: ${feedback}\nPlease adjust your hypothesis to be more novel and distinct from existing work.` : ""}
-    
-    CRITICAL: After generating the hypothesis, perform a self-critique. Identify any potential hallucinations or unsupported claims. 
-    Then, provide the FINAL refined hypothesis that is 100% grounded in the literature.
-    
-    Return a JSON object:
-    {
-      "initialHypothesis": {
-        "title": "...",
-        "description": "...",
-        "rationale": "...",
-        "expectedOutcome": "..."
-      },
-      "selfCritique": "...",
-      "finalHypothesis": {
-        "title": "...",
-        "description": "...",
-        "rationale": "...",
-        "expectedOutcome": "..."
-      }
-    }`;
-    
-    const result = await generateJSON<{ initialHypothesis: Hypothesis; selfCritique: string; finalHypothesis: Hypothesis }>(prompt, "You are a world-class research scientist who values empirical grounding and rigorous self-correction.");
-    console.log(`[HypothesisAgent] Self-Critique: ${result.selfCritique}`);
-    return result.finalHypothesis;
   }
 };
 
@@ -631,147 +490,204 @@ export const NoveltyCheckerAgent = {
   }
 };
 
-export const ContributionAgent = {
-  async extractContributions(hypothesis: Hypothesis): Promise<Contribution[]> {
-    const prompt = `Given the hypothesis: "${hypothesis.title}" and the existing literature, identify the specific research contributions this work would make.
+export const DiscoveryAgent = {
+  async discover(topic: string, papers: Paper[], attempt: number = 0, feedback?: string): Promise<{
+    gaps: GapIdentification;
+    hypothesis: Hypothesis;
+    novelty: { isNovel: boolean; similarity: number; mostSimilarPaper?: string; feedback?: string };
+  }> {
+    const relevantChunks = await vectorStore.search(topic, 15);
+    const ragContext = relevantChunks.map(c => `[Source: ${c.metadata.source}] ${c.text}`).join("\n\n");
     
-    Hypothesis: ${hypothesis.description}
+    const papersContext = papers.map((p, i) => {
+      const chunksInfo = p.chunks 
+        ? p.chunks.map(c => `[Section: ${c.section}] ${c.text}`).join("\n")
+        : p.summary;
+      return `Paper [${i+1}]: ${p.title}\n${chunksInfo}`;
+    }).join("\n\n");
+
+    const prompt = `You are a world-class research scientist. Your goal is to identify research gaps and propose a novel hypothesis for the topic: "${topic}".
     
-    You MUST generate at least 2 concrete contributions.
-    Examples: New architecture, New dataset, New evaluation metric, Empirical findings.
+    Context from Literature:
+    ${papersContext}
+    
+    Retrieved RAG Context:
+    ${ragContext}
+    
+    ${feedback ? `PREVIOUS ATTEMPT FEEDBACK: ${feedback}` : ""}
+    
+    Task:
+    1. Identify 3 critical research gaps.
+    2. Propose a novel hypothesis that addresses at least one of these gaps.
+    3. Perform a self-critique of the hypothesis for novelty and grounding.
+    4. Provide the final refined hypothesis.
+    
+    Return a JSON object:
+    {
+      "gaps": {
+        "gaps": [
+          { "description": "...", "evidence": "...", "potentialImpact": "..." },
+          ...
+        ],
+        "summary": "..."
+      },
+      "hypothesis": {
+        "title": "...",
+        "description": "...",
+        "rationale": "...",
+        "expectedOutcome": "..."
+      },
+      "noveltySelfCheck": "Detailed reasoning on why this is novel compared to the provided papers"
+    }`;
+
+    const result = await generateJSON<{ gaps: GapIdentification; hypothesis: Hypothesis; noveltySelfCheck: string }>(prompt, "You are an elite research scientist.");
+    
+    // Perform embedding-based novelty check as a secondary verification
+    const novelty = await NoveltyCheckerAgent.checkNovelty(result.hypothesis, papers, attempt);
+    
+    return {
+      gaps: result.gaps,
+      hypothesis: result.hypothesis,
+      novelty
+    };
+  },
+
+  async refine(hypothesis: Hypothesis, result: ExperimentResult, papers: Paper[]): Promise<Hypothesis> {
+    const prompt = `The following hypothesis was successful in experiments. Your task is to refine it by adding more technical details to the main parts and resolving any ambiguous aspects.
+    
+    Original Hypothesis:
+    Title: ${hypothesis.title}
+    Description: ${hypothesis.description}
+    Rationale: ${hypothesis.rationale}
+    
+    Experiment Results:
+    Accuracy: ${result.accuracy.toFixed(4)}
+    F1 Score: ${result.f1Score.toFixed(4)}
+    
+    Context from Literature:
+    ${papers.map(p => `- ${p.title}: ${p.summary.slice(0, 200)}...`).join("\n")}
+    
+    Return a JSON object with the refined hypothesis:
+    {
+      "title": "Refined Title",
+      "description": "More detailed and precise description",
+      "rationale": "Updated rationale with more depth",
+      "expectedOutcome": "Updated expected outcome"
+    }`;
+
+    return generateJSON<Hypothesis>(prompt, "You are a meticulous researcher focused on precision and technical depth.");
+  },
+
+  async debug(hypothesis: Hypothesis, result: ExperimentResult, critiques: ReviewerCritique[], papers: Paper[]): Promise<Hypothesis> {
+    const prompt = `The following hypothesis failed to meet expectations in experiments. Your task is to identify where the mistake might be and change the hypothesis until it is corrected.
+    
+    Failed Hypothesis:
+    Title: ${hypothesis.title}
+    Description: ${hypothesis.description}
+    Rationale: ${hypothesis.rationale}
+    
+    Experiment Results:
+    Accuracy: ${result.accuracy.toFixed(4)}
+    F1 Score: ${result.f1Score.toFixed(4)}
+    
+    Critiques:
+    ${critiques.map(c => `- [Rating: ${c.rating}/10] Novelty: ${c.noveltyCritique}\n  Weaknesses: ${c.weaknesses.join(", ")}`).join("\n")}
+    
+    Context from Literature:
+    ${papers.map(p => `- ${p.title}: ${p.summary.slice(0, 200)}...`).join("\n")}
+    
+    Analyze the failure, identify the core mistake, and provide a corrected hypothesis.
+    
+    Return a JSON object with the corrected hypothesis:
+    {
+      "title": "Corrected Title",
+      "description": "Revised description fixing the identified mistakes",
+      "rationale": "Revised rationale explaining why this version should work",
+      "expectedOutcome": "Revised expected outcome"
+    }`;
+
+    return generateJSON<Hypothesis>(prompt, "You are an expert at debugging research failures and pivoting to better directions.");
+  }
+};
+
+export const DesignAgent = {
+  async design(hypothesis: Hypothesis): Promise<{
+    contributions: Contribution[];
+    math: MathFormalization;
+    plan: ExperimentPlan;
+    dataset: DatasetCard;
+  }> {
+    const prompt = `You are a senior research architect. Design a complete research project for the following hypothesis:
+    "${hypothesis.title}"
+    
+    Description: ${hypothesis.description}
+    Rationale: ${hypothesis.rationale}
+    
+    Task:
+    1. Define 2-3 specific research contributions.
+    2. Provide a rigorous mathematical formalization (notation, objective function, algorithm).
+    3. Design a detailed experiment plan (protocol, datasets, baselines, metrics).
+    4. Generate a Dataset Card for the primary proposed dataset.
+    
+    NOTE: The implementation will use AutoGluon's TabularPredictor.
     
     Return a JSON object:
     {
       "contributions": [
-        { "type": "Architecture", "description": "..." },
-        { "type": "Dataset", "description": "..." }
-      ]
-    }`;
-    
-    const result = await generateJSON<{ contributions: Contribution[] }>(prompt, "You are a senior research lead at a top research lab.");
-    const contributions = Array.isArray(result.contributions) ? result.contributions : [];
-    if (contributions.length < 2) {
-      throw new Error("Failed to generate at least 2 concrete contributions.");
-    }
-    return contributions;
-  }
-};
-
-export const MathFormalizerAgent = {
-  async formalize(hypothesis: Hypothesis): Promise<MathFormalization> {
-    const prompt = `Provide a rigorous mathematical formalization for the following research hypothesis:
-    "${hypothesis.title}"
-    
-    Description: ${hypothesis.description}
-    
-    Return a JSON object with:
-    {
-      "problemFormulation": "Formal definition of the problem space",
-      "notation": [
-        { "symbol": "x", "definition": "Input vector" },
-        { "symbol": "y", "definition": "Target label" }
+        { "type": "...", "description": "..." },
+        ...
       ],
-      "objectiveFunction": "L = sum(y - f(x))^2",
-      "algorithmSteps": ["Step 1: ...", "Step 2: ..."]
+      "math": {
+        "problemFormulation": "...",
+        "notation": [{ "symbol": "...", "definition": "..." }],
+        "objectiveFunction": "...",
+        "algorithmSteps": ["..."]
+      },
+      "plan": {
+        "protocol": "...",
+        "datasets": ["..."],
+        "baselines": ["..."],
+        "metrics": ["..."]
+      },
+      "dataset": {
+        "name": "...",
+        "description": "...",
+        "features": ["..."],
+        "size": "...",
+        "source": "..."
+      }
     }`;
-    
-    const result = await generateJSON<MathFormalization>(prompt, "You are a world-class theoretical computer scientist and mathematician.");
-    return {
-      ...result,
-      notation: Array.isArray(result.notation) ? result.notation : [],
-      algorithmSteps: Array.isArray(result.algorithmSteps) ? result.algorithmSteps : []
-    };
-  }
-};
 
-export const ExperimentDesignAgent = {
-  async design(hypothesis: Hypothesis, contributions: Contribution[]): Promise<ExperimentPlan> {
-    const prompt = `Design a rigorous experiment to test the following hypothesis:
-    "${hypothesis.title}"
-    
-    Contributions: ${contributions.map(c => c.description).join(", ")}
-    
-    You MUST include:
-    1. A specific dataset.
-    2. At least 2 baseline models for comparison.
-    3. Specific evaluation metrics.
-    4. A detailed evaluation protocol.
-    
-    NOTE: The proposed model will be implemented using AutoGluon's TabularPredictor for automated ensemble learning and stacking.
-    
-    Return a JSON object:
-    {
-      "protocol": "Step-by-step protocol",
-      "datasets": ["Dataset 1", "Dataset 2"],
-      "baselines": ["Baseline 1", "Baseline 2"],
-      "metrics": ["Metric 1", "Metric 2"]
-    }`;
-    
-    const result = await generateJSON<ExperimentPlan>(prompt, "You are an expert in experimental design and ML evaluation.");
-    return {
-      ...result,
-      datasets: Array.isArray(result.datasets) ? result.datasets : [],
-      baselines: Array.isArray(result.baselines) ? result.baselines : [],
-      metrics: Array.isArray(result.metrics) ? result.metrics : []
-    };
-  }
-};
+    const result = await generateJSON<{
+      contributions: Contribution[];
+      math: MathFormalization;
+      plan: ExperimentPlan;
+      dataset: DatasetCard;
+    }>(prompt, "You are a senior research architect at a top AI lab.");
 
-export const DatasetGeneratorAgent = {
-  async generate(plan: ExperimentPlan): Promise<DatasetCard> {
-    const prompt = `Generate a detailed Dataset Card for the primary dataset proposed in the experiment plan:
-    "${plan.datasets[0]}"
-    
-    Return a JSON object:
-    {
-      "name": "Dataset Name",
-      "description": "Detailed description",
-      "features": ["feature1", "feature2"],
-      "size": "100k samples",
-      "source": "Synthetic/Public Repository"
-    }`;
-    
-    const result = await generateJSON<DatasetCard>(prompt, "You are a data engineer specializing in high-quality ML datasets.");
-    return {
-      ...result,
-      features: result.features || []
-    };
+    return result;
   }
 };
 
 export const ExperimentRunner = {
-  async runExperiment(hypothesis: Hypothesis, plan: ExperimentPlan, config?: ExperimentConfig): Promise<ExperimentResult> {
+  async runExperiment(hypothesis: Hypothesis, plan: ExperimentPlan, config: ExperimentConfig): Promise<ExperimentResult> {
+    console.log(`[ExperimentRunner] Executing experiment for: ${hypothesis.title}`);
+    
     try {
-      const response = await fetch("/api/run-experiment", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ hypothesis, plan, config })
+      const result = await apiClient.post<ExperimentResult>('/api/run-experiment', {
+        hypothesis,
+        plan,
+        config
+      }, {
+        timeout: 60000, // Experiments can take a while
+        retries: 2,
+        backoff: 5000
       });
       
-      const data = await response.json();
-      
-      if (!response.ok) {
-        let stageInfo = "";
-        if (data.stage) {
-          const stages: Record<string, string> = {
-            "validation": "Input Validation",
-            "data_preparation": "Data Preparation",
-            "model_training_ag": "AutoGluon Model Training (Ensemble)",
-            "model_training_lr": "Baseline Model Training (Logistic Regression)",
-            "unknown": "General Execution"
-          };
-          stageInfo = ` [Stage: ${stages[data.stage] || data.stage}]`;
-        }
-        throw new Error(`Experiment failed during ${stageInfo}: ${data.error || response.statusText}`);
-      }
-      
-      return data;
+      return result;
     } catch (error: any) {
-      console.error("ExperimentRunner error:", error);
-      if (error.name === 'TypeError' && error.message.includes('fetch')) {
-        throw new Error("Network error: Could not connect to the experiment server. Please check your connection.");
-      }
-      throw error;
+      console.error("[ExperimentRunner] Backend experiment failed:", error);
+      throw new Error(`Experiment execution failed: ${error.message || String(error)}`);
     }
   }
 };

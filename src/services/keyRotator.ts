@@ -94,47 +94,52 @@ export class KeyRotator {
     }
   }
 
-  private selectKeyLottery(): KeyStats | null {
+  private selectBestKey(): KeyStats | null {
     const now = Date.now();
-    const candidates = Array.from(this.stats.values()).filter(s => 
-      !s.isFailed && 
-      s.cooldownUntil <= now && 
-      s.concurrency < Math.ceil(s.dynamicConcurrencyLimit)
-    );
-
-    if (candidates.length === 0) return null;
-
-    // Weighted random selection (Lottery)
-    const totalWeight = candidates.reduce((sum, s) => sum + s.healthScore, 0);
-    if (totalWeight === 0) return candidates[Math.floor(Math.random() * candidates.length)];
-
-    let random = Math.random() * totalWeight;
-    for (const s of candidates) {
-      random -= s.healthScore;
-      if (random <= 0) return s;
-    }
-
-    return candidates[0];
+    return Array.from(this.stats.values())
+      .filter(s => !s.isFailed && s.cooldownUntil <= now && s.concurrency < Math.ceil(s.dynamicConcurrencyLimit))
+      .sort((a, b) => {
+        // Sort by health score (primary), then by least recently used (secondary)
+        if (b.healthScore !== a.healthScore) return b.healthScore - a.healthScore;
+        return a.lastUsed - b.lastUsed;
+      })[0] || null;
   }
 
   private async acquire(): Promise<KeyStats> {
-    if (this.activeTotal >= this.options.maxConcurrencyTotal) {
-      return new Promise(resolve => {
-        this.requestQueue.push(() => resolve(this.acquire()));
-      });
+    const now = Date.now();
+    const allFailed = Array.from(this.stats.values()).every(s => s.isFailed);
+    if (allFailed && this.stats.size > 0) {
+      throw new Error(`[Rotator:${this.provider}] All available keys have failed. Please check your API keys or reset status.`);
     }
 
-    const selected = this.selectKeyLottery();
-    if (selected) {
+    const selected = this.selectBestKey();
+    if (selected && this.activeTotal < this.options.maxConcurrencyTotal) {
       selected.concurrency++;
       this.activeTotal++;
       return selected;
     }
 
-    // No keys available (all on cooldown or busy)
-    // Wait for a bit and retry
-    await new Promise(r => setTimeout(r, 1000));
-    return this.acquire();
+    // If no key is immediately available, wait in queue
+    if (this.requestQueue.length < 100) {
+      return new Promise((resolve, reject) => {
+        const timeout = setTimeout(() => {
+          const idx = this.requestQueue.indexOf(resolveFn);
+          if (idx !== -1) {
+            this.requestQueue.splice(idx, 1);
+            reject(new Error(`[Rotator:${this.provider}] Timed out waiting for available key`));
+          }
+        }, 30000); // 30s queue timeout
+
+        const resolveFn = () => {
+          clearTimeout(timeout);
+          resolve(this.acquire());
+        };
+        
+        this.requestQueue.push(resolveFn);
+      });
+    }
+    
+    throw new Error(`[Rotator:${this.provider}] Request queue full`);
   }
 
   private release(s: KeyStats) {
@@ -152,71 +157,102 @@ export class KeyRotator {
     errorHandler?: (error: any, stats: KeyStats) => { retry: boolean; cooldownMs?: number; fatal?: boolean }
   ): Promise<T> {
     let lastError: any;
+    const maxRetries = this.options.maxRetries;
 
-    for (let i = 0; i < this.options.maxRetries; i++) {
-      const stats = await this.acquire();
+    for (let i = 0; i < maxRetries; i++) {
+      let stats: KeyStats;
+      try {
+        stats = await this.acquire();
+      } catch (e) {
+        // Queue full or timeout acquiring
+        await new Promise(r => setTimeout(r, 1000 * (i + 1)));
+        continue;
+      }
+
       const startTime = Date.now();
       stats.lastUsed = startTime;
       stats.totalRequests++;
 
-      // Implement Hedging
-      let hedgingTimeout: any;
+      // Professional Hedging Logic
       const controller = new AbortController();
-
-      const executePromise = (async () => {
+      let hedgingTimer: any;
+      
+      const runRequest = async (s: KeyStats, isHedging = false): Promise<T> => {
         try {
-          const result = await fn(stats.key);
-          this.updateHealth(stats, true, Date.now() - startTime);
+          const result = await fn(s.key);
+          if (controller.signal.aborted) throw new Error("Aborted by hedging");
+          
+          this.updateHealth(s, true, Date.now() - startTime);
           return result;
         } catch (error: any) {
-          this.updateHealth(stats, false);
+          if (controller.signal.aborted) throw error;
+          
+          this.updateHealth(s, false);
+          const decision = errorHandler 
+            ? errorHandler(error, s) 
+            : this.defaultErrorHandler(error, s);
+
+          if (decision.fatal || s.consecutiveFailures >= this.options.circuitBreakerThreshold) {
+            s.isFailed = true;
+          } else if (decision.cooldownMs) {
+            s.cooldownUntil = Date.now() + decision.cooldownMs;
+          }
+          
+          if (!decision.retry || isHedging) throw error;
+          throw error; // Let the outer loop handle retries
+        } finally {
+          this.release(s);
+        }
+      };
+
+      try {
+        if (this.options.enableHedging && i === 0) {
+          // Primary request
+          const primaryPromise = runRequest(stats);
+          
+          // Hedging request after threshold
+          const hedgingPromise = new Promise<T>((resolve, reject) => {
+            hedgingTimer = setTimeout(async () => {
+              try {
+                const hedgeStats = await this.selectBestKey();
+                if (hedgeStats && hedgeStats.key !== stats.key) {
+                  hedgeStats.concurrency++;
+                  this.activeTotal++;
+                  console.log(`[Rotator:${this.provider}] Hedging request started with key: ${hedgeStats.key.slice(0, 8)}...`);
+                  resolve(await runRequest(hedgeStats, true));
+                }
+              } catch (e) {
+                // Hedging failed, just wait for primary
+              }
+            }, this.options.hedgingThresholdMs);
+          });
+
+          try {
+            const result = await Promise.race([primaryPromise, hedgingPromise]);
+            return result;
+          } finally {
+            clearTimeout(hedgingTimer);
+            controller.abort(); // Cancel whichever one is still running
+          }
+        } else {
+          return await runRequest(stats);
+        }
+      } catch (error: any) {
+        lastError = error;
+        if (error.message === "Aborted by hedging") continue;
+        
+        // If we've tried many times, maybe the keys are just slow or rate limited
+        // Don't retry indefinitely if all keys are failing
+        const availableKeys = Array.from(this.stats.values()).filter(s => !s.isFailed).length;
+        const maxRetriesToTry = Math.min(availableKeys, 10); // Try at most 10 keys per request
+        if (i >= Math.max(this.options.maxRetries, maxRetriesToTry)) {
           throw error;
         }
-      })();
 
-      const result = await Promise.race([
-        executePromise,
-        new Promise<never>((_, reject) => {
-          if (this.options.enableHedging) {
-            hedgingTimeout = setTimeout(() => {
-              console.log(`[Rotator:${this.provider}] Hedging triggered for key ${stats.key.slice(0, 6)}...`);
-              reject({ isHedging: true });
-            }, this.options.hedgingThresholdMs);
-          }
-        })
-      ]).catch(async (err) => {
-        if (err.isHedging) {
-          // If hedging triggered, we don't release the current key yet, 
-          // but we start another attempt in parallel.
-          // This is a bit complex for a simple loop, so we'll just treat it as a "retry" 
-          // but keep the current one running if possible.
-          // Actually, for simplicity in this environment, we'll just fall through to the retry logic.
-          return null; 
-        }
-        throw err;
-      });
-
-      clearTimeout(hedgingTimeout);
-      this.release(stats);
-
-      if (result !== null) return result;
-
-      // If we're here, it was either an error or hedging
-      if (lastError && !lastError.isHedging) {
-        const decision = errorHandler 
-          ? errorHandler(lastError, stats) 
-          : this.defaultErrorHandler(lastError, stats);
-
-        if (decision.fatal || stats.consecutiveFailures >= this.options.circuitBreakerThreshold) {
-          stats.isFailed = true;
-        } else if (decision.cooldownMs) {
-          stats.cooldownUntil = Date.now() + decision.cooldownMs;
-        }
-        if (!decision.retry) throw lastError;
+        // Exponential backoff for retries
+        const backoff = Math.min(10000, 500 * Math.pow(2, i));
+        await new Promise(r => setTimeout(r, backoff));
       }
-      
-      // Small backoff
-      await new Promise(r => setTimeout(r, 200 * (i + 1)));
     }
 
     throw lastError || new Error(`[Rotator:${this.provider}] Max retries reached`);

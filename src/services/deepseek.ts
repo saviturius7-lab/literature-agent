@@ -52,6 +52,21 @@ function collectDeepSeekKeys(): string[] {
   if (orKey && orKey.trim() && !orKey.includes("TODO")) {
     collected.push(orKey.trim());
   }
+
+  // User-provided keys as fallback (from chat)
+  const userProvidedKeys = [
+    "sk-82ba5bcbf56547329e8994c3f7442bf7",
+    "sk-0b25e96a0a22446d9d29a114df6d5bd8",
+    "sk-767e64d0a3204441bdb13f538b2434ad",
+    "sk-95c700832e6c400b8a0f9eb6a7b678e9",
+    "sk-bdcc800c152b433289bb5f1cc12b458c",
+    "sk-93d49ffbb38047a6a3907aca6d6c6da0",
+    "sk-787d7bd5398b4d728d9c2fd7bba09836",
+    "sk-cc0bd069f9fc4d08992dcf74bd5fe8ed",
+    "sk-f49e74d12de246da8d92b3907f5f77dc",
+    "sk-b316d654920d4623a3a81892b09f843d"
+  ];
+  collected.push(...userProvidedKeys);
   
   const uniqueKeys = Array.from(new Set(collected)).filter(k => {
     if (!k || typeof k !== 'string' || k.length < 10) return false;
@@ -97,8 +112,7 @@ const deepSeekErrorHandler = (error: any, stats: KeyStats) => {
   const message = (error.message || "").toLowerCase();
 
   const isAuth = status === 401 || status === 403 || 
-                message.includes("401") || message.includes("403") || 
-                message.includes("invalid") || message.includes("auth") || 
+                (status === 400 && message.includes("invalid api key")) ||
                 message.includes("unauthorized") || message.includes("user not found") || 
                 message.includes("authentication fails") || message.includes("credentials");
 
@@ -112,35 +126,55 @@ const deepSeekErrorHandler = (error: any, stats: KeyStats) => {
   return { retry: true, cooldownMs: 5000 };
 };
 
+async function withTimeout<T>(promise: Promise<T>, timeoutMs: number): Promise<T> {
+  const controller = new AbortController();
+  const id = setTimeout(() => controller.abort(), timeoutMs);
+  
+  try {
+    const result = await promise;
+    clearTimeout(id);
+    return result;
+  } catch (error: any) {
+    clearTimeout(id);
+    if (error.name === 'AbortError') {
+      throw new Error(`Request timed out after ${timeoutMs}ms`);
+    }
+    throw error;
+  }
+}
+
 export async function generateDeepSeekJSON<T>(prompt: string, systemInstruction?: string): Promise<T> {
   return rotator.execute(async (apiKey) => {
     // Detect provider based on key prefix
     const isOpenRouter = apiKey.startsWith('sk-or-');
     const endpoint = isOpenRouter 
       ? "https://openrouter.ai/api/v1/chat/completions" 
-      : "https://api.deepseek.com/v1/chat/completions";
+      : "https://api.deepseek.com/chat/completions";
     
     const model = isOpenRouter ? "deepseek/deepseek-chat" : "deepseek-chat";
 
-    const response = await fetch(endpoint, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "Authorization": `Bearer ${apiKey}`,
-        ...(isOpenRouter ? {
-          "HTTP-Referer": window.location.origin,
-          "X-Title": "Literature Agent"
-        } : {})
-      },
-      body: JSON.stringify({
-        model: model,
-        messages: [
-          ...(systemInstruction ? [{ role: "system", content: systemInstruction }] : []),
-          { role: "user", content: prompt }
-        ],
-        response_format: { type: "json_object" }
-      })
-    });
+    const response = await withTimeout(
+      fetch(endpoint, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "Authorization": `Bearer ${apiKey}`,
+          ...(isOpenRouter ? {
+            "HTTP-Referer": typeof window !== 'undefined' ? window.location.origin : "http://localhost:3000",
+            "X-Title": "Research Agent"
+          } : {})
+        },
+        body: JSON.stringify({
+          model: model,
+          messages: [
+            ...(systemInstruction ? [{ role: "system", content: systemInstruction }] : []),
+            { role: "user", content: prompt }
+          ],
+          response_format: { type: "json_object" }
+        })
+      }),
+      60000 // 60s timeout for DeepSeek
+    );
 
     if (!response.ok) {
       const errorData = await response.json().catch(() => ({}));
@@ -148,6 +182,14 @@ export async function generateDeepSeekJSON<T>(prompt: string, systemInstruction?
     }
 
     const data = await response.json();
-    return JSON.parse(data.choices[0].message.content) as T;
+    const content = data.choices[0].message.content;
+    
+    try {
+      return JSON.parse(content) as T;
+    } catch (e) {
+      // Handle potential markdown in content
+      const cleaned = content.replace(/```json\n?|```/g, "").trim();
+      return JSON.parse(cleaned) as T;
+    }
   }, deepSeekErrorHandler);
 }

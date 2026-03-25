@@ -135,6 +135,8 @@ export type AgentStatus =
   | 'extracting_findings'
   | 'identifying_gaps'
   | 'hypothesizing' 
+  | 'discovering'
+  | 'designing'
   | 'checking_novelty'
   | 'extracting_contributions'
   | 'formalizing_math'
