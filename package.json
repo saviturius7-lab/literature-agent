@@ -18,7 +18,7 @@
     "clsx": "^2.1.1",
     "dotenv": "^17.2.3",
     "express": "^4.21.2",
-    "fast-xml-parser": "^5.5.5",
+    "fast-xml-parser": "^5.5.7",
     "html2pdf.js": "^0.14.0",
     "lucide-react": "^0.546.0",
     "ml-confusion-matrix": "^2.0.0",
