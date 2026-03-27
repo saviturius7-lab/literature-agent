@@ -369,10 +369,3 @@ npm run preview  # Preview build
 npm run lint     # Type-check (no emit)
 npm run clean    # Remove dist folder
 ```
-
----
-
-If you'd like, I can also generate:
-- a **developer README** focused on contribution/setup internals,
-- an **operator runbook** (failure modes, log patterns, reset procedures), and
-- a **security hardening checklist** for production deployment.
