@@ -119,18 +119,19 @@ const allGeminiKeys = collectKeys();
 const rotator = new KeyRotator(allGeminiKeys, 'gemini', {
   minConcurrencyPerKey: 1,
   maxConcurrencyPerKey: 4,
-  maxConcurrencyTotal: 20,
+  maxConcurrencyTotal: Math.max(100, allGeminiKeys.length * 2),
   baseCooldownMs: 15000,
-  maxRetries: 15,
+  maxRetries: Math.max(20, allGeminiKeys.length), // Try at least 20 times or once per key
   circuitBreakerThreshold: 5,
-  hedgingThresholdMs: 8000, // Gemini is usually faster
+  hedgingThresholdMs: 8000,
   enableHedging: true
 });
 
 export function getGeminiStatus() {
   const status = rotator.getStatus();
   const now = Date.now();
-  const hardQuota = status.stats.filter(s => s.cooldownUntil > now + (2 * 60 * 1000)).length;
+  // Hard quota is now 1 hour, so we check for cooldowns > 10 mins
+  const hardQuota = status.stats.filter(s => s.cooldownUntil > now + (10 * 60 * 1000)).length;
   
   return { 
     ...status, 
@@ -174,7 +175,8 @@ const geminiErrorHandler = (error: any, stats: KeyStats) => {
                        message.toLowerCase().includes("current quota") ||
                        message.toLowerCase().includes("exceeded your current quota");
     
-    return { retry: true, cooldownMs: isHardQuota ? 5 * 60 * 1000 : 30000 };
+    // Hard quota cooldown: 1 hour. Transient rate limit: 30s.
+    return { retry: true, cooldownMs: isHardQuota ? 60 * 60 * 1000 : 30000 };
   }
 
   if (isTimeout) return { retry: true, cooldownMs: 1000 };

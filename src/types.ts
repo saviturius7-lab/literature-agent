@@ -58,7 +58,9 @@ export interface MathFormalization {
 export interface ReviewerCritique {
   reviewerId: number;
   weaknesses: string[];
+  strengths: string[];
   noveltyCritique: string;
+  technicalCritique: string;
   rating: number;
 }
 
@@ -108,6 +110,7 @@ export interface FactualityResult {
 }
 
 export interface ResearchReport {
+  title: string;
   abstract: string;
   introduction: string;
   methodology: string;
@@ -115,6 +118,7 @@ export interface ResearchReport {
   discussion: string;
   conclusion: string;
   references: string[];
+  fullMarkdown: string;
 }
 
 export interface GapIdentification {
@@ -148,6 +152,7 @@ export type AgentStatus =
   | 'revising'
   | 'reporting' 
   | 'verifying_report'
+  | 'refining_report'
   | 'completed' 
   | 'error';
 

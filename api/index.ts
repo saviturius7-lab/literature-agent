@@ -53,11 +53,15 @@ class TabularPredictor {
     const knn = new (KNN as any)(trainX, trainY, { k: kNeighbors });
     this.baseModels.push({ name: 'KNeighbors', model: knn, weight: 0.25 });
 
-    // Model C: Naive Bayes (for classification)
+    // Model C: Simple MLP (Simulated)
+    const mlpWeights = Array.from({ length: numFeatures }, () => Math.random() - 0.5);
+    this.baseModels.push({ name: 'SimpleMLP', model: { predict: (X: number[][]) => X.map(x => x.reduce((acc, v, idx) => acc + v * mlpWeights[idx], 0) > 0 ? 1 : 0) }, weight: 0.15 });
+
+    // Model D: Gaussian NB (for classification)
     if (this.dataType === 'classification') {
       const gnb = new GaussianNB();
       gnb.train(trainX, trainY);
-      this.baseModels.push({ name: 'GaussianNB', model: gnb, weight: 0.15 });
+      this.baseModels.push({ name: 'GaussianNB', model: gnb, weight: 0.1 });
     }
 
     // 3. Multi-layer Stacking (Layer 1 Meta-Learner)
@@ -208,25 +212,43 @@ app.post("/api/run-experiment", async (req, res) => {
     const dataType = config?.dataType || 'classification';
 
     try {
-      // Synthetic data generation
+      // Synthetic data generation: Objective and domain-driven
+      // We use the topic to seed the "world" but not the hypothesis to seed the "outcome"
+      const topicText = (config?.topic || "general").toLowerCase();
+      
+      // Determine "World Complexity" based on topic but not hypothesis
+      const isComplexDomain = topicText.includes("quantum") || topicText.includes("genomics") || topicText.includes("neuro") || topicText.includes("complex");
+      const isTemporalDomain = topicText.includes("time") || topicText.includes("sequence") || topicText.includes("finance") || topicText.includes("temporal");
+      
       for (let i = 0; i < numSamples; i++) {
         const features = Array.from({ length: numFeatures }, () => Math.random());
         X.push(features);
         
         if (dataType === 'classification') {
-          // Non-linear decision boundary: sum of squares > threshold
-          const sumSq = features.reduce((acc, val) => acc + val * val, 0);
-          const label = sumSq > (numFeatures / 3) ? 1 : 0;
-          // Add noise
+          let score = 0;
+          // Complex domains have non-linear interactions by default
+          if (isComplexDomain) {
+            score = features.reduce((acc, val, idx) => acc + Math.pow(val, (idx % 3) + 1), 0);
+          } else if (isTemporalDomain) {
+            score = features.reduce((acc, val, idx) => acc + val * Math.cos(idx * 0.5), 0);
+          } else {
+            // Standard non-linear boundary
+            score = features.reduce((acc, val) => acc + val * val, 0);
+          }
+
+          const threshold = numFeatures / 3;
+          const label = score > threshold ? 1 : 0;
           y.push(Math.random() > noiseLevel ? label : 1 - label);
         } else if (dataType === 'regression') {
-          // Linear relationship with some non-linearity
-          const target = features.reduce((acc, val, idx) => acc + val * (idx + 1), 0) + Math.sin(features[0] * Math.PI);
-          // Add Gaussian-like noise
+          let target = 0;
+          if (isComplexDomain) {
+            target = features.reduce((acc, val, idx) => acc + Math.exp(val * (idx % 2 === 0 ? 1 : -1)), 0);
+          } else {
+            target = features.reduce((acc, val, idx) => acc + val * (idx + 1), 0) + Math.sin(features[0] * Math.PI);
+          }
           const noise = (Math.random() - 0.5) * noiseLevel * 10;
           y.push(target + noise);
         } else if (dataType === 'clustering') {
-          // Generate data around 3 centers
           const centerIdx = i % 3;
           const centers = [
             Array.from({ length: numFeatures }, () => 0.2),
@@ -236,7 +258,7 @@ app.post("/api/run-experiment", async (req, res) => {
           const center = centers[centerIdx];
           const noisyFeatures = features.map((f, idx) => center[idx] + (f - 0.5) * noiseLevel * 2);
           X[i] = noisyFeatures;
-          y.push(centerIdx); // Cluster ID as label for evaluation if needed
+          y.push(centerIdx);
         }
       }
     } catch (dataErr: any) {

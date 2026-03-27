@@ -40,14 +40,18 @@ export class KeyRotator {
     private options: RotatorOptions = {
       minConcurrencyPerKey: 1,
       maxConcurrencyPerKey: 4,
-      maxConcurrencyTotal: 20,
+      maxConcurrencyTotal: 100,
       baseCooldownMs: 15000,
-      maxRetries: 5,
+      maxRetries: 10,
       circuitBreakerThreshold: 5,
-      hedgingThresholdMs: 8000, // 8 seconds default for LLMs
+      hedgingThresholdMs: 8000,
       enableHedging: true
     }
   ) {
+    // Ensure total concurrency is at least proportional to the number of keys
+    const minTotal = Math.max(options.maxConcurrencyTotal || 0, keys.length * 2);
+    this.options.maxConcurrencyTotal = minTotal;
+
     keys.forEach(key => {
       this.stats.set(key, {
         key,
@@ -79,8 +83,9 @@ export class KeyRotator {
       s.avgLatency = s.avgLatency === 0 ? latency : (s.avgLatency * 0.8) + (latency * 0.2);
       
       // Health score boost
-      s.healthScore = Math.min(100, s.healthScore + 5);
+      s.healthScore = Math.min(100, s.healthScore + 10);
       s.consecutiveFailures = 0;
+      s.isFailed = false; // Recover if it was marked failed
     } else {
       // Multiplicative decrease for concurrency
       s.dynamicConcurrencyLimit = Math.max(
@@ -89,20 +94,26 @@ export class KeyRotator {
       );
       
       // Health score penalty
-      s.healthScore = Math.max(0, s.healthScore - 25);
+      s.healthScore = Math.max(0, s.healthScore - 20);
       s.consecutiveFailures++;
     }
   }
 
   private selectBestKey(): KeyStats | null {
     const now = Date.now();
-    return Array.from(this.stats.values())
-      .filter(s => !s.isFailed && s.cooldownUntil <= now && s.concurrency < Math.ceil(s.dynamicConcurrencyLimit))
-      .sort((a, b) => {
-        // Sort by health score (primary), then by least recently used (secondary)
-        if (b.healthScore !== a.healthScore) return b.healthScore - a.healthScore;
-        return a.lastUsed - b.lastUsed;
-      })[0] || null;
+    const candidates = Array.from(this.stats.values())
+      .filter(s => !s.isFailed && s.cooldownUntil <= now && s.concurrency < Math.ceil(s.dynamicConcurrencyLimit));
+    
+    if (candidates.length === 0) return null;
+
+    // Sort by health score (primary), then by least recently used (secondary)
+    // We add a small random factor to healthScore to distribute load among equally healthy keys
+    return candidates.sort((a, b) => {
+      const scoreA = a.healthScore + (Math.random() * 5);
+      const scoreB = b.healthScore + (Math.random() * 5);
+      if (Math.abs(scoreB - scoreA) > 2) return scoreB - scoreA;
+      return a.lastUsed - b.lastUsed;
+    })[0];
   }
 
   private async acquire(): Promise<KeyStats> {

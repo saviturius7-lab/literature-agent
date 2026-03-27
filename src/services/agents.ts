@@ -16,7 +16,7 @@ import {
   FactualityResult,
   ExperimentConfig
 } from "../types";
-import { generateJSON, embedText, embedTexts } from "./gemini";
+import { generateJSON, embedText, embedTexts, generateText } from "./gemini";
 import { vectorStore } from "./vectorStore";
 import { apiClient } from "./apiClient";
 
@@ -60,34 +60,37 @@ export const TopicRefinementAgent = {
 
 export const SearchQueryAgent = {
   async refineQuery(topic: string): Promise<string> {
-    const prompt = `You are a research query optimization expert. Given a research topic, your goal is to generate an optimized search query for the arXiv API.
+    const prompt = `You are a research query optimization expert for the arXiv API.
     
     Topic: "${topic}"
     
-    First, imagine a hypothetical ideal abstract for a paper that would perfectly address this topic.
-    Then, based on that hypothetical abstract and the topic itself, generate a concise, highly effective search query.
+    Your goal is to generate a concise, highly effective search query. 
+    ArXiv works best with specific technical keywords rather than long sentences.
     
-    The query should use arXiv search syntax if helpful (e.g., ti:title, au:author, abs:abstract, all:all fields).
-    Focus on specific technical terms and keywords.
+    Rules:
+    1. Use boolean operators (AND, OR) and field prefixes (ti:, abs:, all:) if helpful.
+    2. Focus on the core technical innovations and domain.
+    3. Keep the query under 80 characters.
+    4. Do NOT just repeat the title; extract the most important 2-4 keywords.
+    5. Example: "Quantifying Societal Bias in Vision-Language Models" -> "all:\"Vision-Language Models\" AND all:\"Societal Bias\""
     
     Return your response in this JSON format:
     {
-      "hypotheticalAbstract": "...",
       "refinedQuery": "..."
     }`;
 
     try {
-      const result = await generateJSON<{ hypotheticalAbstract: string; refinedQuery: string }>(prompt, "You are a research query optimization expert.");
-      console.log(`[SearchQueryAgent] Hypothetical Abstract: ${result.hypotheticalAbstract.slice(0, 100)}...`);
+      const result = await generateJSON<{ refinedQuery: string }>(prompt, "You are a research query optimization expert.");
       return result.refinedQuery;
     } catch (error) {
       console.error("[SearchQueryAgent] Failed to refine query, using original topic:", error);
-      return topic;
+      return topic.slice(0, 100);
     }
   },
 
   async getBroadKeywords(topic: string): Promise<string[]> {
-    const prompt = `Generate 5 broad, distinct technical keywords or short phrases related to this research topic that could be used to find relevant papers on arXiv.
+    const prompt = `Generate 3-4 broad, distinct technical keywords or short phrases related to this research topic.
+    These should be high-level concepts that will definitely return results.
     
     Topic: "${topic}"
     
@@ -98,10 +101,10 @@ export const SearchQueryAgent = {
 
     try {
       const result = await generateJSON<{ keywords: string[] }>(prompt, "You are an expert at identifying core research concepts.");
-      return result.keywords || [topic];
+      return result.keywords || [topic.slice(0, 50)];
     } catch (error) {
       console.error("[SearchQueryAgent] Failed to get broad keywords:", error);
-      return [topic];
+      return [topic.slice(0, 50)];
     }
   }
 };
@@ -113,7 +116,7 @@ export const LiteratureAgent = {
 
     const addPapers = (papers: Paper[]) => {
       for (const p of papers) {
-        const normalizedTitle = p.title.toLowerCase().trim();
+        const normalizedTitle = p.title.toLowerCase().trim().replace(/[^\w\s]/gi, '');
         if (!seenTitles.has(normalizedTitle)) {
           allPapers.push(p);
           seenTitles.add(normalizedTitle);
@@ -122,44 +125,61 @@ export const LiteratureAgent = {
     };
 
     try {
-      // 1. Start ALL search strategies in parallel for maximum speed
-      onProgress?.("Initializing aggressive multi-strategy literature search...");
+      onProgress?.("Initializing 'The Research Hive' multi-source discovery engine...");
       
       const [refinedQuery, broadKeywords] = await Promise.all([
         SearchQueryAgent.refineQuery(topic),
         SearchQueryAgent.getBroadKeywords(topic).catch(() => [])
       ]);
 
-      onProgress?.(`Searching ArXiv with ${broadKeywords.length + 2} parallel strategies...`);
-      
-      const searchStrategies = [
+      const searchStrategies = Array.from(new Set([
         topic,
         refinedQuery,
         ...broadKeywords
-      ];
+      ])).filter(q => q && q.length > 2);
 
-      const searchResults = await Promise.all(
-        searchStrategies.map(query => 
-          this.executeSearch(query).catch(e => {
-            console.error(`Search failed for "${query}":`, e);
-            return [];
-          })
-        )
-      );
+      // 1. Parallel Multi-Source Search (ArXiv + OpenAlex)
+      onProgress?.(`Searching ArXiv and OpenAlex with ${searchStrategies.length} strategies in parallel...`);
+      
+      const searchPromises = searchStrategies.map(async (query, i) => {
+        // Minimal staggering to avoid ArXiv burst limits, but much faster than before
+        if (i > 0) await new Promise(r => setTimeout(r, 500 * i));
+        
+        const [arxivResults, openAlexResults] = await Promise.all([
+          this.executeArXivSearch(query).catch(() => []),
+          this.executeOpenAlexSearch(query).catch(() => [])
+        ]);
+        return [...arxivResults, ...openAlexResults];
+      });
 
-      searchResults.forEach(papers => addPapers(papers));
-      console.log(`Multi-strategy search complete. Found ${allPapers.length} unique papers.`);
+      const results = await Promise.all(searchPromises);
+      results.forEach(papers => addPapers(papers));
 
-      // 3. General AI/ML fallback if still desperate
-      if (allPapers.length < 5) {
-        onProgress?.("Applying general AI/ML fallback search...");
-        const fallbackQueries = ["machine learning", "artificial intelligence", "deep learning"];
-        const fallbackResults = await Promise.all(fallbackQueries.map(q => this.executeSearch(q).catch(e => [])));
-        fallbackResults.forEach(results => addPapers(results));
+      if (allPapers.length === 0) {
+        onProgress?.("No papers found. Applying emergency fallback...");
+        const fallback = await this.executeArXivSearch("machine learning fairness bias").catch(() => []);
+        addPapers(fallback);
       }
 
-      onProgress?.(`Found ${allPapers.length} unique papers. Starting relevance filtering...`);
-      return allPapers;
+      // 2. Semantic Reranking (Fast)
+      onProgress?.(`Semantic reranking ${allPapers.length} candidates...`);
+      const rerankedPapers = await this.semanticRerank(topic, allPapers);
+
+      // 3. Citation Expansion (Smart Discovery) - Parallelized
+      const topPapers = rerankedPapers.slice(0, 5); // Take top 5 for better coverage
+      if (topPapers.length > 0) {
+        onProgress?.("Expanding discovery via citation traversal...");
+        const relatedResults = await Promise.all(
+          topPapers.map(p => this.fetchRelatedPapers(p).catch(() => []))
+        );
+        relatedResults.forEach(papers => addPapers(papers));
+      }
+
+      // Final Rerank after expansion
+      const finalPapers = await this.semanticRerank(topic, allPapers);
+      
+      onProgress?.(`Discovery complete. ${finalPapers.length} unique papers identified.`);
+      return finalPapers.slice(0, 40); 
     } catch (error) {
       console.error("[LiteratureAgent] Error in fetchPapers:", error);
       onProgress?.("Error during paper retrieval. Proceeding with available results.");
@@ -167,8 +187,10 @@ export const LiteratureAgent = {
     }
   },
 
-  async executeSearch(query: string): Promise<Paper[]> {
-    const url = `/api/arxiv?q=${encodeURIComponent(query)}`;
+  async executeArXivSearch(query: string): Promise<Paper[]> {
+    // Ensure query is not too long for ArXiv
+    const truncatedQuery = query.length > 80 ? query.slice(0, 80).split(' ').slice(0, -1).join(' ') : query;
+    const url = `/api/arxiv?q=${encodeURIComponent(truncatedQuery)}`;
     
     try {
       const xmlData = await apiClient.get<string>(url, {
@@ -178,44 +200,141 @@ export const LiteratureAgent = {
       });
       
       const jsonObj = parser.parse(xmlData);
+      if (!jsonObj || !jsonObj.feed || !jsonObj.feed.entry) return [];
       
-      if (!jsonObj || !jsonObj.feed || !jsonObj.feed.entry) {
-        return [];
-      }
-      
-      return this.processEntries(jsonObj.feed.entry);
+      const entryList = Array.isArray(jsonObj.feed.entry) ? jsonObj.feed.entry : [jsonObj.feed.entry];
+      return entryList.map((entry: any) => {
+        const authors = Array.isArray(entry.author) 
+          ? entry.author.map((a: any) => a.name) 
+          : (entry.author ? [entry.author.name] : ["Unknown Author"]);
+        const year = entry.published ? new Date(entry.published).getFullYear() : "n.d.";
+        const title = (entry.title || "Untitled").replace(/\n/g, " ").trim();
+        const summary = (entry.summary || "No summary available").replace(/\n/g, " ").trim();
+        
+        return {
+          title,
+          summary,
+          authors,
+          published: entry.published || new Date().toISOString(),
+          link: entry.id || "#",
+          citation: `${authors.join(", ")} (${year}). ${title}. arXiv:${(entry.id || "").split('/').pop()}`,
+          chunks: ChunkingAgent.chunkPaper(title, summary),
+          keyFindings: []
+        };
+      });
     } catch (error) {
-      console.error(`Error executing search for "${query}":`, error);
+      console.error(`ArXiv search failed for "${query}":`, error);
       return [];
     }
   },
 
-  processEntries(entries: any): Paper[] {
-    const entryList = Array.isArray(entries) ? entries : [entries];
+  async executeOpenAlexSearch(query: string): Promise<Paper[]> {
+    const url = `https://api.openalex.org/works?search=${encodeURIComponent(query)}&mailto=saviturius7@gmail.com&per_page=10`;
     
-    return entryList.slice(0, 15).map((entry: any) => {
-      const authors = Array.isArray(entry.author) 
-        ? entry.author.map((a: any) => a.name) 
-        : (entry.author ? [entry.author.name] : ["Unknown Author"]);
-      const year = entry.published ? new Date(entry.published).getFullYear() : "n.d.";
-      const title = (entry.title || "Untitled").replace(/\n/g, " ").trim();
-      const summary = (entry.summary || "No summary available").replace(/\n/g, " ").trim();
+    try {
+      const data = await apiClient.get<any>(url, { timeout: 10000 });
+      if (!data || !data.results) return [];
       
-      return {
-        title,
-        summary,
-        authors,
-        published: entry.published || new Date().toISOString(),
-        link: entry.id || "#",
-        citation: `${authors.join(", ")} (${year}). ${title}. arXiv:${(entry.id || "").split('/').pop()}`,
-        chunks: ChunkingAgent.chunkPaper(title, summary),
+      return data.results.map((res: any) => ({
+        title: res.title || "Untitled",
+        summary: res.abstract_inverted_index ? "Abstract available in index" : "No summary available",
+        authors: res.authorships?.map((a: any) => a.author.display_name) || ["Unknown Author"],
+        published: res.publication_date || new Date().toISOString(),
+        link: res.doi || res.id || "#",
+        citation: `${res.authorships?.[0]?.author.display_name || "Unknown"} (${res.publication_year}). ${res.title}. ${res.doi || ""}`,
+        chunks: ChunkingAgent.chunkPaper(res.title || "", "OpenAlex Paper"),
         keyFindings: []
-      };
-    });
+      }));
+    } catch (error) {
+      console.error(`OpenAlex search failed for "${query}":`, error);
+      return [];
+    }
+  },
+
+  async fetchRelatedPapers(paper: Paper): Promise<Paper[]> {
+    // OpenAlex has a 'related_works' field which is a list of work IDs
+    // But it's easier to search for papers that cite this one or have similar concepts
+    const url = `https://api.openalex.org/works?filter=title.search:${encodeURIComponent(paper.title.slice(0, 100))}&mailto=saviturius7@gmail.com`;
+    
+    try {
+      const data = await apiClient.get<any>(url, { timeout: 8000 });
+      if (!data || !data.results || data.results.length === 0) return [];
+      
+      const workId = data.results[0].id;
+      const relatedUrl = `https://api.openalex.org/works?filter=related_to:${workId.split('/').pop()}&mailto=saviturius7@gmail.com&per_page=5`;
+      
+      const relatedData = await apiClient.get<any>(relatedUrl, { timeout: 8000 });
+      if (!relatedData || !relatedData.results) return [];
+      
+      return relatedData.results.map((res: any) => ({
+        title: res.title || "Untitled",
+        summary: "Related work discovered via citation traversal",
+        authors: res.authorships?.map((a: any) => a.author.display_name) || ["Unknown Author"],
+        published: res.publication_date || new Date().toISOString(),
+        link: res.doi || res.id || "#",
+        citation: `${res.authorships?.[0]?.author.display_name || "Unknown"} (${res.publication_year}). ${res.title}.`,
+        chunks: ChunkingAgent.chunkPaper(res.title || "", "Related Work"),
+        keyFindings: []
+      }));
+    } catch (error) {
+      return [];
+    }
+  },
+
+  async semanticRerank(topic: string, papers: Paper[]): Promise<Paper[]> {
+    if (papers.length === 0) return [];
+    
+    try {
+      const topicEmbedding = await embedText(topic);
+      const paperTexts = papers.map(p => `${p.title} ${p.summary.slice(0, 200)}`);
+      const paperEmbeddings = await embedTexts(paperTexts);
+      
+      const scoredPapers = papers.map((paper, i) => ({
+        paper,
+        score: cosineSimilarity(topicEmbedding, paperEmbeddings[i])
+      }));
+      
+      return scoredPapers
+        .sort((a, b) => b.score - a.score)
+        .map(s => s.paper);
+    } catch (error) {
+      console.error("[LiteratureAgent] Semantic reranking failed:", error);
+      return papers;
+    }
   }
 };
 
 export const UnifiedPaperAnalyzerAgent = {
+  async verifyBatchWithOpenAlex(papers: Paper[]): Promise<boolean[]> {
+    if (papers.length === 0) return [];
+    
+    try {
+      // OpenAlex supports filtering by multiple titles using |
+      const titles = papers.map(p => p.title.replace(/[^\w\s]/gi, '').toLowerCase().trim().slice(0, 50));
+      const filter = titles.map(t => `title.search:${encodeURIComponent(t)}`).join('|');
+      const url = `https://api.openalex.org/works?filter=${filter}&mailto=saviturius7@gmail.com&per_page=50`;
+      
+      const data = await apiClient.get<any>(url, { 
+        timeout: 15000,
+        retries: 2,
+        backoff: 1000
+      });
+      
+      if (data && data.results) {
+        const foundTitles = data.results.map((r: any) => (r.display_name || r.title || "").toLowerCase().replace(/[^\w\s]/gi, '').trim());
+        
+        return papers.map(p => {
+          const normalizedP = p.title.toLowerCase().replace(/[^\w\s]/gi, '').trim();
+          return foundTitles.some((ft: string) => ft.includes(normalizedP) || normalizedP.includes(ft) || (normalizedP.length > 20 && ft.startsWith(normalizedP.slice(0, 20))));
+        });
+      }
+    } catch (error) {
+      console.error("[UnifiedPaperAnalyzerAgent] Batch verification failed:", error);
+    }
+    
+    return Promise.all(papers.map(p => this.verifyWithOpenAlex(p.title, p.authors)));
+  },
+
   async verifyWithOpenAlex(title: string, authors: string[] = []): Promise<boolean> {
     try {
       // Clean title for search: remove punctuation, lowercase, and take first 100 chars
@@ -325,40 +444,55 @@ export const UnifiedPaperAnalyzerAgent = {
   async analyze(topic: string, papers: Paper[], onProgress?: (msg: string) => void): Promise<Paper[]> {
     if (papers.length === 0) return [];
 
-    onProgress?.(`Analyzing ${papers.length} papers for relevance, consistency, and findings...`);
+    const pool = papers.slice(0, 40);
+    onProgress?.(`Analyzing top ${pool.length} papers with high-concurrency engine...`);
     
-    const batchSize = 5; // Smaller batch size for better reliability
-    const analyzedPapers: Paper[] = [];
-    
-    // Process batches sequentially to avoid overwhelming APIs
-    for (let i = 0; i < papers.length; i += batchSize) {
-      const batch = papers.slice(i, i + batchSize);
-      const batchIndex = Math.floor(i/batchSize) + 1;
-      const totalBatches = Math.ceil(papers.length/batchSize);
-      
-      onProgress?.(`Analyzing batch ${batchIndex}/${totalBatches}...`);
-      
-      try {
-        const results = await this.analyzeBatch(topic, batch);
-        
-        // OpenAlex verification can be parallelized within the batch
-        const openAlexResults = await Promise.all(batch.map(p => this.verifyWithOpenAlex(p.title, p.authors)));
-
-        results.forEach((res, idx) => {
-          const paper = batch[idx];
-          if (paper && res.isRelevant && res.isConsistent && openAlexResults[idx]) {
-            paper.keyFindings = res.keyFindings;
-            paper.verified = true;
-            analyzedPapers.push(paper);
-          }
-        });
-      } catch (e) {
-        console.error(`Batch ${batchIndex} failed:`, e);
-      }
+    const batchSize = 5;
+    const verifiedPapers: Paper[] = [];
+    const batches = [];
+    for (let i = 0; i < pool.length; i += batchSize) {
+      batches.push(pool.slice(i, i + batchSize));
     }
 
-    onProgress?.(`Analysis complete. ${analyzedPapers.length} high-quality papers retained.`);
-    return analyzedPapers;
+    const concurrencyLimit = 10; 
+    const targetVerified = 12;
+
+    for (let i = 0; i < batches.length; i += concurrencyLimit) {
+      const currentBatches = batches.slice(i, i + concurrencyLimit);
+      
+      await Promise.all(currentBatches.map(async (batch) => {
+        if (verifiedPapers.length >= targetVerified) return;
+
+        try {
+          const [analysisResults, verificationResults] = await Promise.all([
+            this.analyzeBatch(topic, batch),
+            this.verifyBatchWithOpenAlex(batch)
+          ]);
+          
+          analysisResults.forEach((res) => {
+            const paper = batch[res.index];
+            const isVerified = verificationResults[res.index];
+            
+            if (paper && res.isRelevant && res.isConsistent && isVerified) {
+              verifiedPapers.push({
+                ...paper,
+                isVerified: true,
+                relevanceScore: 8,
+                keyFindings: res.keyFindings,
+                summary: res.summary || paper.summary
+              });
+            }
+          });
+        } catch (error) {
+          console.error("Batch processing failed:", error);
+        }
+      }));
+      
+      if (verifiedPapers.length >= targetVerified) break;
+    }
+
+    onProgress?.(`Analysis complete. ${verifiedPapers.length} verified papers retained.`);
+    return verifiedPapers;
   }
 };
 
@@ -456,37 +590,83 @@ export const SelectionAgent = {
 
 export const NoveltyCheckerAgent = {
   async checkNovelty(hypothesis: Hypothesis, papers: Paper[], attempt: number = 0): Promise<{ isNovel: boolean; similarity: number; mostSimilarPaper?: string; feedback?: string }> {
-    const [hypothesisEmbedding, ...paperEmbeddings] = await embedTexts([
-      `${hypothesis.title} ${hypothesis.description}`,
-      ...papers.map(p => `${p.title} ${p.summary}`)
-    ]);
+    // RAG: Search for the most similar existing work in the vector store (which contains chunks)
+    const query = `${hypothesis.title} ${hypothesis.description}`;
+    const similarChunks = await vectorStore.search(query, 10);
     
     let maxSimilarity = -1;
-    let mostSimilarPaper = "";
+    let mostSimilarSource = "";
 
-    paperEmbeddings.forEach((paperEmbedding, idx) => {
-      const similarity = cosineSimilarity(hypothesisEmbedding, paperEmbedding);
+    if (similarChunks.length > 0) {
+      const [hypothesisEmbedding, ...chunkEmbeddings] = await embedTexts([
+        query,
+        ...similarChunks.map(c => c.text)
+      ]);
+
+      chunkEmbeddings.forEach((chunkEmbedding, idx) => {
+        const similarity = cosineSimilarity(hypothesisEmbedding, chunkEmbedding);
+        if (similarity > maxSimilarity) {
+          maxSimilarity = similarity;
+          mostSimilarSource = similarChunks[idx].metadata.source;
+        }
+      });
+    }
+
+    // Also check against summaries for global context
+    const [hypothesisEmbedding, ...summaryEmbeddings] = await embedTexts([
+      query,
+      ...papers.map(p => `${p.title} ${p.summary}`)
+    ]);
+
+    summaryEmbeddings.forEach((summaryEmbedding, idx) => {
+      const similarity = cosineSimilarity(hypothesisEmbedding, summaryEmbedding);
       if (similarity > maxSimilarity) {
         maxSimilarity = similarity;
-        mostSimilarPaper = papers[idx].title;
+        mostSimilarSource = papers[idx].title;
       }
     });
 
-    // Adaptive threshold: starts at 0.85, increases by 0.02 per attempt up to 0.93
-    const threshold = Math.min(0.93, 0.85 + (attempt * 0.02));
+    // Adaptive threshold: starts at 0.8, increases per attempt
+    const threshold = Math.min(0.9, 0.8 + (attempt * 0.02));
     const isNovel = maxSimilarity < threshold;
     
     let feedback = "";
     if (!isNovel) {
-      feedback = `The hypothesis is too similar to the existing paper: "${mostSimilarPaper}" (Similarity score: ${maxSimilarity.toFixed(2)}, Threshold: ${threshold.toFixed(2)}). Try to find a different angle or a gap that this paper doesn't address.`;
+      feedback = `The hypothesis is too similar to existing work: "${mostSimilarSource}" (Similarity score: ${maxSimilarity.toFixed(2)}, Threshold: ${threshold.toFixed(2)}). You must find a more novel angle.`;
     }
 
     return {
       isNovel,
       similarity: maxSimilarity,
-      mostSimilarPaper,
+      mostSimilarPaper: mostSimilarSource,
       feedback
     };
+  }
+};
+
+export const GapAnalysisAgent = {
+  async analyze(topic: string, papers: Paper[]): Promise<GapIdentification> {
+    const prompt = `You are a critical research auditor. Analyze the following papers to identify 3 non-obvious research gaps for the topic: "${topic}".
+    
+    Papers:
+    ${papers.map((p, i) => `[${i+1}] ${p.title}\nSummary: ${p.summary}`).join("\n\n")}
+    
+    Task:
+    1. Look for contradictions between papers.
+    2. Identify assumptions that are taken for granted but not proven.
+    3. Find areas where current methodologies fail or are inefficient.
+    4. Propose 3 specific gaps with evidence from the provided summaries.
+    
+    Return a JSON object:
+    {
+      "gaps": [
+        { "description": "...", "evidence": "...", "potentialImpact": "..." },
+        ...
+      ],
+      "summary": "Cohesive summary of the research landscape and the identified gaps."
+    }`;
+    
+    return await generateJSON<GapIdentification>(prompt, "You are a skeptical and rigorous research auditor.");
   }
 };
 
@@ -506,7 +686,12 @@ export const DiscoveryAgent = {
       return `Paper [${i+1}]: ${p.title}\n${chunksInfo}`;
     }).join("\n\n");
 
-    const prompt = `You are a world-class research scientist. Your goal is to identify research gaps and propose a novel hypothesis for the topic: "${topic}".
+    const gaps = await GapAnalysisAgent.analyze(topic, papers);
+    
+    const prompt = `You are a world-class research scientist. Your goal is to propose a novel hypothesis for the topic: "${topic}" based on these identified research gaps.
+    
+    Identified Gaps:
+    ${JSON.stringify(gaps)}
     
     Context from Literature:
     ${papersContext}
@@ -517,20 +702,12 @@ export const DiscoveryAgent = {
     ${feedback ? `PREVIOUS ATTEMPT FEEDBACK: ${feedback}` : ""}
     
     Task:
-    1. Identify 3 critical research gaps.
-    2. Propose a novel hypothesis that addresses at least one of these gaps.
-    3. Perform a self-critique of the hypothesis for novelty and grounding.
-    4. Provide the final refined hypothesis.
+    1. Propose a novel hypothesis that directly addresses one or more of the identified gaps.
+    2. Provide a detailed rationale and expected outcome.
+    3. Perform a self-critique for novelty and grounding.
     
     Return a JSON object:
     {
-      "gaps": {
-        "gaps": [
-          { "description": "...", "evidence": "...", "potentialImpact": "..." },
-          ...
-        ],
-        "summary": "..."
-      },
       "hypothesis": {
         "title": "...",
         "description": "...",
@@ -540,13 +717,13 @@ export const DiscoveryAgent = {
       "noveltySelfCheck": "Detailed reasoning on why this is novel compared to the provided papers"
     }`;
 
-    const result = await generateJSON<{ gaps: GapIdentification; hypothesis: Hypothesis; noveltySelfCheck: string }>(prompt, "You are an elite research scientist.");
+    const result = await generateJSON<{ hypothesis: Hypothesis; noveltySelfCheck: string }>(prompt, "You are an elite research scientist.");
     
     // Perform embedding-based novelty check as a secondary verification
     const novelty = await NoveltyCheckerAgent.checkNovelty(result.hypothesis, papers, attempt);
     
     return {
-      gaps: result.gaps,
+      gaps,
       hypothesis: result.hypothesis,
       novelty
     };
@@ -764,7 +941,82 @@ export const RevisionAgent = {
   }
 };
 
+export const LiteratureSynthesisAgent = {
+  async synthesize(topic: string, papers: Paper[]): Promise<string> {
+    const prompt = `You are a world-class AI researcher. Synthesize the following papers into a cohesive "Related Work" narrative for a research paper on "${topic}".
+    
+    Papers:
+    ${papers.map((p, i) => `[${i+1}] ${p.title}\nSummary: ${p.summary}`).join("\n\n")}
+    
+    Task:
+    1. Group the papers by theme or methodology.
+    2. Provide a narrative that explains the evolution of the field and where the current research fits in.
+    3. Use in-text citations like [1], [2], etc.
+    4. Be critical and highlight the strengths and weaknesses of existing work.
+    
+    Return the synthesized narrative in Markdown format.`;
+    
+    try {
+      return await generateText(prompt, "You are an expert in scientific literature synthesis.");
+    } catch (e) {
+      console.error("Literature synthesis failed:", e);
+      return papers.map((p, i) => `### [${i+1}] ${p.title}\n${p.summary}`).join("\n\n");
+    }
+  }
+};
+
 export const ReportAgent = {
+  async generateSection(
+    sectionName: string,
+    topic: string,
+    hypothesis: Hypothesis,
+    papers: Paper[],
+    contributions: Contribution[],
+    math: MathFormalization,
+    experimentPlan: ExperimentPlan,
+    datasetCard: DatasetCard,
+    result: ExperimentResult,
+    critiques: ReviewerCritique[],
+    previousSections: string = ""
+  ): Promise<string> {
+    const prompt = `You are a world-class AI researcher writing a high-impact conference paper (e.g., NeurIPS, ICML).
+    Write the **${sectionName}** section of the research report.
+    
+    Topic: ${topic}
+    Hypothesis: ${hypothesis.title}
+    
+    Context from Literature:
+    ${papers.map((p, i) => `[${i+1}] ${p.title}: ${p.summary.slice(0, 300)}...`).join("\n")}
+    
+    Research Details:
+    - Contributions: ${JSON.stringify(contributions)}
+    - Math: ${JSON.stringify(math)}
+    - Plan: ${JSON.stringify(experimentPlan)}
+    - Dataset: ${JSON.stringify(datasetCard)}
+    - Results: ${JSON.stringify(result)}
+    - Critiques: ${JSON.stringify(critiques)}
+    
+    ${previousSections ? `Previous Sections for Context:\n${previousSections.slice(-2000)}` : ""}
+    
+    Instructions for this section (${sectionName}):
+    - Use professional, academic language.
+    - Be technically precise.
+    - Use LaTeX-style notation for math where appropriate.
+    - Cite the provided papers using [1], [2], etc. ONLY if they are relevant to this section.
+    - Do NOT invent papers.
+    - For the Results section, include detailed analysis of the metrics and feature importance.
+    - For the Discussion section, address the reviewer critiques and explain how they were mitigated or why they are limitations.
+    
+    Return ONLY the text for the ${sectionName} section in Markdown format.`;
+
+    try {
+      return await generateText(prompt, "You are a senior research scientist and expert technical writer.");
+    } catch (e) {
+      console.error(`Failed to generate section ${sectionName}:`, e);
+      return `## ${sectionName}\n[Content generation failed for this section.]`;
+    }
+  },
+
   async generateReport(
     topic: string, 
     papers: Paper[], 
@@ -774,143 +1026,96 @@ export const ReportAgent = {
     experimentPlan: ExperimentPlan,
     datasetCard: DatasetCard,
     result: ExperimentResult,
-    critiques: ReviewerCritique[]
+    critiques: ReviewerCritique[],
+    onProgress?: (msg: string) => void
   ): Promise<ResearchReport> {
-    // RAG: Retrieve relevant chunks for the report
-    const relevantChunks = await vectorStore.search(`${topic} ${hypothesis.description}`, 15);
-    const ragContext = relevantChunks.map(c => `[Source: ${c.metadata.source}] ${c.text}`).join("\n\n");
-
-    const papersContext = papers.map((p, i) => {
-      const chunksInfo = p.chunks 
-        ? p.chunks.map(c => `[Section: ${c.section}] ${c.text}`).join("\n")
-        : p.summary;
-      return `[${i+1}] ${p.title}:\n${chunksInfo}`;
-    }).join("\n\n");
-
-    // Step 1: Generate initial response
-    const initialPrompt = `Write an extensive, professional research report in the style of an arXiv preprint.
+    onProgress?.("Generating structured research report...");
     
-    CRITICAL INSTRUCTIONS:
-    1. ONLY use the provided papers and their specific sections for citations. Do NOT invent any papers or citations.
-    2. Every in-text citation like [1], [2] MUST correspond to the paper list provided below.
-    3. Ensure the methodology and discussion are deeply grounded in the provided literature, referencing specific sections where appropriate.
-    4. If a claim is made, it should ideally be supported by one of the provided papers or the retrieved context.
+    const sections = [
+      "Abstract",
+      "Introduction",
+      "Related Work",
+      "Methodology",
+      "Experimental Setup",
+      "Results",
+      "Discussion",
+      "Conclusion"
+    ];
     
-    Topic: ${topic}
-    Hypothesis: ${hypothesis.title}
+    let fullReportText = `# ${hypothesis.title}\n\nGenerated by Literature Agent\n\n`;
+    const sectionContents: Record<string, string> = {};
     
-    Retrieved Context (RAG):
-    ${ragContext}
-
-    Provided Literature (Grounded Context):
-    ${papersContext}
-    
-    Contributions: ${contributions.map(c => c.description).join(", ")}
-    Mathematical Formalization: ${math.problemFormulation}
-    Algorithm: ${math.algorithmSteps.join(" -> ")}
-    Experiment Plan: ${experimentPlan.protocol}
-    Dataset: ${datasetCard.name} - ${datasetCard.description}
-    Dataset Features: ${datasetCard.features.join(", ")}
-    Dataset Size: ${datasetCard.size}
-    Dataset Source: ${datasetCard.source}
-    Results: Accuracy ${result.accuracy.toFixed(2)}, F1 ${result.f1Score.toFixed(2)}
-    Baselines: ${(Array.isArray(result.baselines) ? result.baselines : []).map(b => `${b.name} (${b.accuracy.toFixed(2)})`).join(", ")}
-    Ablations: ${(Array.isArray(result.ablationStudies) ? result.ablationStudies : []).map(a => `${a.componentRemoved} (-${a.impactOnMetric.toFixed(2)})`).join(", ")}
-    Failure Cases: ${(Array.isArray(result.failureCases) ? result.failureCases : []).map(f => f.example).join("; ")}
-    Implementation Details: ${result.implementationDetails}
-    Experiment Logs (Evidence):
-    ${(Array.isArray(result.logs) ? result.logs : []).join("\n")}
-    Reviewer Feedback: ${critiques.map(c => c.weaknesses.join(", ")).join("; ")}
-    
-    You MUST include:
-    1. A clear "Contributions" section in the Introduction.
-    2. A "Mathematical Formalization" section with notation and algorithms.
-    3. A "Dataset Description" section with full details (name, description, features, size, source).
-    4. A "Baseline Comparison" table/section with at least 2 baselines.
-    5. An "Ablation Study" section.
-    6. A "Failure Case Analysis" section with concrete examples.
-    7. An "Implementation Details" section for reproducibility.
-    8. An "Experimental Evidence" section that includes the execution logs as proof of the experiments being conducted.
-    
-    Requirements:
-    - Professional academic language.
-    - Heavy in-text citations [1], [2], etc.
-    - Comprehensive sections (2000+ words).
-    
-    Return a JSON object:
-    {
-      "abstract": "...",
-      "introduction": "...",
-      "methodology": "...",
-      "results": "...",
-      "discussion": "...",
-      "conclusion": "...",
-      "references": ["Full list in APA style"]
+    for (const section of sections) {
+      onProgress?.(`Writing section: ${section}...`);
+      let content = "";
+      if (section === "Related Work") {
+        content = await LiteratureSynthesisAgent.synthesize(topic, papers);
+      } else {
+        content = await this.generateSection(
+          section,
+          topic,
+          hypothesis,
+          papers,
+          contributions,
+          math,
+          experimentPlan,
+          datasetCard,
+          result,
+          critiques,
+          fullReportText
+        );
+      }
+      sectionContents[section] = content;
+      fullReportText += `\n\n${content}`;
     }
-    
-    Allowed Citations (ONLY USE THESE):
-    ${papers.map((p, i) => `[${i+1}] ${p.citation}`).join("\n")}
-    `;
-    
-    const initialReport = await generateJSON<ResearchReport>(initialPrompt, "You are a world-class scientific researcher who adheres to the highest standards of academic integrity and grounding.");
 
-    // Step 2: Generate validation questions
-    const verificationQuestionsPrompt = `Based on the following research report and the provided literature, generate 5-8 specific verification questions to check for hallucinations, mis-citations, or unsupported claims.
-    
-    Report Abstract: ${initialReport.abstract.slice(0, 500)}...
-    Report Methodology: ${initialReport.methodology.slice(0, 500)}...
-    
-    Questions should be like: "Does Paper [X] actually support the claim about Y in the methodology?" or "Is the citation [Z] correctly used for the concept of W?"
-    
-    Return a JSON object:
-    {
-      "questions": ["Question 1", "Question 2", ...]
-    }`;
-    
-    const { questions } = await generateJSON<{ questions: string[] }>(verificationQuestionsPrompt, "You are a skeptical academic auditor.");
+    fullReportText += `\n\n## References\n\n${papers.map((p, i) => `[${i+1}] ${p.citation}`).join("\n\n")}`;
 
-    // Step 3: Answer validation questions independently
-    const verificationAnswersPrompt = `Answer the following verification questions using ONLY the provided research papers context. Be extremely objective and factual.
-    
-    Questions:
-    ${questions.map((q, i) => `${i+1}. ${q}`).join("\n")}
-    
-    Context:
-    ${papersContext}
-    
-    Return a JSON object:
-    {
-      "answers": [
-        { "question": "...", "answer": "...", "isSupported": boolean },
-        ...
-      ]
-    }`;
-    
-    const { answers } = await generateJSON<{ answers: { question: string; answer: string; isSupported: boolean }[] }>(verificationAnswersPrompt, "You are a meticulous fact-checker.");
-
-    // Step 4: Produce final corrected response
-    const finalRefinementPrompt = `Refine the initial research report based on the verification results. 
-    If any part of the initial report was found to be unsupported or hallucinated, correct it or remove it.
-    Ensure the final report is 100% grounded in the provided literature.
-    
-    Initial Report: ${JSON.stringify(initialReport)}
-    Verification Results: ${JSON.stringify(answers)}
-    
-    Return a JSON object with the final, verified report:
-    {
-      "abstract": "...",
-      "introduction": "...",
-      "methodology": "...",
-      "results": "...",
-      "discussion": "...",
-      "conclusion": "...",
-      "references": [...]
-    }`;
-    
-    const reportResult = await generateJSON<ResearchReport>(finalRefinementPrompt, "You are a world-class researcher ensuring absolute accuracy and integrity.");
     return {
-      ...reportResult,
-      references: reportResult.references || []
+      title: hypothesis.title,
+      abstract: sectionContents["Abstract"] || "No abstract generated.",
+      introduction: sectionContents["Introduction"] || "No introduction generated.",
+      methodology: sectionContents["Methodology"] || "No methodology generated.",
+      results: sectionContents["Results"] || "No results generated.",
+      discussion: sectionContents["Discussion"] || "No discussion generated.",
+      conclusion: sectionContents["Conclusion"] || "No conclusion generated.",
+      references: papers.map(p => p.citation),
+      fullMarkdown: fullReportText
+    };
+  },
+
+  async refineReport(
+    report: ResearchReport,
+    papers: Paper[],
+    critiques: ReviewerCritique[],
+    factualityIssues: { claim: string; reason: string }[]
+  ): Promise<ResearchReport> {
+    const prompt = `Refine the following research report based on adversarial feedback and factuality issues.
+    
+    Current Report Title: ${report.title}
+    
+    Feedback from Reviewers:
+    ${critiques.map(c => `- Weaknesses: ${c.weaknesses.join(", ")}\n- Technical Critique: ${c.technicalCritique}`).join("\n")}
+    
+    Factuality Issues (HALLUCINATIONS TO FIX):
+    ${factualityIssues.map(i => `- Claim: ${i.claim}\n- Reason: ${i.reason}`).join("\n")}
+    
+    Source Literature for Grounding:
+    ${papers.map((p, i) => `[${i+1}] ${p.title}: ${p.summary}`).join("\n")}
+    
+    Instructions:
+    1. Fix all factuality issues by removing or correcting unsupported claims.
+    2. Address the reviewer weaknesses by adding technical depth and precision.
+    3. Ensure the final report is 100% grounded in the provided literature.
+    
+    Return the full, refined report in Markdown format.`;
+
+    const refinedMarkdown = await generateText(prompt, "You are a world-class researcher performing a final, rigorous refinement of a scientific paper.");
+    
+    // Parse the refined markdown back into sections (simplified for now)
+    return {
+      ...report,
+      fullMarkdown: refinedMarkdown
     };
   }
 };
@@ -940,6 +1145,40 @@ export const VerificationAgent = {
   }
 };
 
+export const ReviewerAgent = {
+  async review(report: ResearchReport, papers: Paper[]): Promise<ReviewerCritique[]> {
+    const prompt = `You are a senior reviewer for a top-tier AI conference (e.g., NeurIPS).
+    Critically evaluate the following research report for technical depth, novelty, and potential "degenerate strategies" (e.g., citation stuffing, generic claims, lack of technical detail).
+    
+    Report Title: ${report.title}
+    Abstract: ${report.abstract.slice(0, 500)}...
+    Methodology: ${report.methodology.slice(0, 1000)}...
+    
+    Review Criteria:
+    1. **Technical Depth**: Does the methodology provide enough detail (math, algorithms, parameters) for a peer to reproduce?
+    2. **Novelty**: Is the hypothesis a significant departure from the provided literature, or just a minor tweak?
+    3. **Citation Integrity**: Are citations [1], [2], etc. used to support specific technical claims, or just "stuffed" into sentences?
+    4. **Experimental Rigor**: Are the results analyzed deeply, or just listed?
+    
+    Return a JSON object with 3 distinct reviewer critiques:
+    {
+      "critiques": [
+        {
+          "rating": number (1-10),
+          "strengths": ["..."],
+          "weaknesses": ["..."],
+          "noveltyCritique": "...",
+          "technicalCritique": "..."
+        },
+        ...
+      ]
+    }`;
+    
+    const result = await generateJSON<{ critiques: ReviewerCritique[] }>(prompt, "You are a highly critical and technically proficient academic reviewer.");
+    return result.critiques;
+  }
+};
+
 export const FactualityEvalAgent = {
   async evaluate(report: ResearchReport, papers: Paper[]): Promise<FactualityResult> {
     const papersContext = papers.map((p, i) => {
@@ -949,20 +1188,21 @@ export const FactualityEvalAgent = {
       return `[${i+1}] ${p.title}:\n${chunksInfo}`;
     }).join("\n\n");
 
-    const prompt = `Perform a rigorous factuality evaluation of the following research report against the provided source literature.
+    const prompt = `Perform a RUTHLESS factuality evaluation of the following research report.
+    Your goal is to find ANY claim that is not explicitly supported by the provided literature.
     
     Report Abstract: ${report.abstract.slice(0, 500)}...
-    Report Methodology: ${report.methodology.slice(0, 1000)}...
-    Report Discussion: ${report.discussion.slice(0, 500)}...
+    Report Methodology: ${report.methodology.slice(0, 1500)}...
+    Report Results: ${report.results.slice(0, 500)}...
     
     Source Literature:
     ${papersContext}
     
-    Evaluation Steps:
-    1. Extract the 10 most critical factual claims from the report.
-    2. For each claim, determine if it is explicitly supported by the provided source literature.
-    3. Calculate a "Faithfulness Score" (Supported Claims / Total Claims).
-    4. Identify any specific unsupported or hallucinated statements.
+    Evaluation Protocol:
+    1. Identify the 15 most specific technical claims (e.g., "Method X achieves Y", "Paper [Z] proves W").
+    2. Cross-reference each claim with the source literature.
+    3. If a claim is "plausible" but not "explicitly stated", it is UNSUPPORTED.
+    4. Be extremely wary of "citation stuffing" where a citation is used to hide a generic claim.
     
     Return a JSON object:
     {
@@ -970,13 +1210,12 @@ export const FactualityEvalAgent = {
       "totalClaims": number,
       "supportedClaims": number,
       "unsupportedClaims": [
-        { "claim": "...", "reason": "Why it's unsupported" },
+        { "claim": "...", "reason": "Why it's unsupported or a hallucination" },
         ...
       ],
-      "isPassed": boolean (true if score >= 0.8)
+      "isPassed": boolean (true if score >= 0.9)
     }`;
 
-    // Using a stronger model (Pro) for the judge role
-    return generateJSON<FactualityResult>(prompt, "You are an elite academic judge and fact-checker. You are extremely strict and do not allow any unsupported claims.", "gemini-3.1-pro-preview");
+    return generateJSON<FactualityResult>(prompt, "You are a ruthless academic auditor. Your reputation depends on finding even the smallest hallucination.", "gemini-3.1-pro-preview");
   }
 };

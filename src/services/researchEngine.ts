@@ -18,7 +18,8 @@ import {
   ReviewerSimulatorAgent,
   ReportAgent,
   FactualityEvalAgent,
-  UnifiedPaperAnalyzerAgent
+  UnifiedPaperAnalyzerAgent,
+  ReviewerAgent
 } from './agents';
 import { vectorStore } from './vectorStore';
 
@@ -44,39 +45,29 @@ export class ResearchEngine {
       const stepDelay = (ms = 100) => new Promise(resolve => setTimeout(resolve, ms));
       vectorStore.clear();
 
-      // 1. Parallel Start: Topic Refinement + Initial Search
+      // 1. Topic Refinement
       onUpdate({ status: 'refining_topic', topic: inputTopic, iteration: 1 });
-      
-      // We start refinement and the first search in parallel to save time
-      const [refinedTopic, initialPapers] = await Promise.all([
-        TopicRefinementAgent.refine(inputTopic),
-        LiteratureAgent.fetchPapers(inputTopic, (msg) => onProgress(msg))
-      ]);
-
+      const refinedTopic = await TopicRefinementAgent.refine(inputTopic);
       onUpdate({ topic: refinedTopic, status: 'searching' });
-      
-      // 2. Comprehensive Search with Refined Topic
-      let rawPapers = [...initialPapers];
-      const refinedPapers = await LiteratureAgent.fetchPapers(refinedTopic, (msg) => onProgress(msg));
-      
-      // Merge and deduplicate
-      const seen = new Set(rawPapers.map(p => p.title.toLowerCase().trim()));
-      refinedPapers.forEach(p => {
-        const t = p.title.toLowerCase().trim();
-        if (!seen.has(t)) {
-          rawPapers.push(p);
-          seen.add(t);
-        }
-      });
 
+      // 2. Comprehensive Search with Refined Topic
+      // We only search once with the refined topic to avoid redundancy and save time
+      const rawPapers = await LiteratureAgent.fetchPapers(refinedTopic, (msg) => onProgress(msg));
+      
       if (rawPapers.length === 0) throw new Error(`No papers found for "${refinedTopic}".`);
 
       // 3. Fast Verification & Analysis
       onUpdate({ status: 'verifying_citations' });
       const trulyVerified = await UnifiedPaperAnalyzerAgent.analyze(refinedTopic, rawPapers, (msg) => onProgress(msg));
-      if (trulyVerified.length === 0) throw new Error(`Citation verification failed.`);
+      
+      if (trulyVerified.length === 0) {
+        console.warn("No papers passed strict verification. Using top raw papers as fallback.");
+        onProgress("Strict verification failed. Using best available matches...");
+        trulyVerified.push(...rawPapers.slice(0, 10));
+      }
 
-      // Parallelize: Vector Store Ingestion + Selection
+      // Parallelize: Vector Store Ingestion + Selection + Discovery
+      onUpdate({ status: 'discovering' });
       const ingestionPromise = (async () => {
         const allChunks: Chunk[] = [];
         trulyVerified.forEach(p => p.chunks && allChunks.push(...p.chunks));
@@ -90,12 +81,11 @@ export class ResearchEngine {
       })();
 
       const selectionPromise = SelectionAgent.selectPapers(refinedTopic, trulyVerified);
+      const [ , papers] = await Promise.all([ingestionPromise, selectionPromise]);
       
-      const [, papers] = await Promise.all([ingestionPromise, selectionPromise]);
-      onUpdate({ papers: trulyVerified, status: 'discovering' });
-
-      // 4. Discovery
-      let { gaps, hypothesis } = await DiscoveryAgent.discover(refinedTopic, papers);
+      onUpdate({ papers: trulyVerified });
+      const { gaps, hypothesis: initialHypothesis } = await DiscoveryAgent.discover(refinedTopic, papers);
+      let hypothesis = initialHypothesis;
       
       // 5. Iterative Refinement Loop
       let workflowIteration = 1;
@@ -149,7 +139,7 @@ export class ResearchEngine {
 
       // 6. Final Reporting & Factuality (Parallelized)
       onUpdate({ status: 'reporting' });
-      const report = await ReportAgent.generateReport(
+      let report = await ReportAgent.generateReport(
         refinedTopic, 
         papers, 
         hypothesis, 
@@ -158,17 +148,46 @@ export class ResearchEngine {
         finalDesign.plan,
         finalDesign.dataset,
         finalExperiment!, 
-        finalCritiques
+        finalCritiques,
+        (msg) => onProgress(msg)
       );
       
       onUpdate({ status: 'verifying_report', report });
+      
+      // Adversarial Review Phase
+      const reviewerCritiques = await ReviewerAgent.review(report, papers);
       const factualityResult = await FactualityEvalAgent.evaluate(report, papers);
       
-      onUpdate({ 
-        status: 'completed', 
-        report,
-        factualityResult
-      });
+      // If report is poor or has factuality issues, attempt ONE refinement
+      const avgRating = reviewerCritiques.reduce((acc, c) => acc + c.rating, 0) / reviewerCritiques.length;
+      
+      if (avgRating < 6 || !factualityResult.isPassed) {
+        onUpdate({ status: 'refining_report', report });
+        onProgress(`Report quality issues detected (Rating: ${avgRating.toFixed(1)}, Factuality: ${factualityResult.faithfulnessScore.toFixed(2)}). Refining...`);
+        
+        report = await ReportAgent.refineReport(
+          report,
+          papers,
+          reviewerCritiques,
+          factualityResult.unsupportedClaims
+        );
+        
+        // Re-evaluate after refinement
+        onProgress("Re-evaluating refined report...");
+        const finalFactuality = await FactualityEvalAgent.evaluate(report, papers);
+        
+        onUpdate({ 
+          status: 'completed', 
+          report,
+          factualityResult: finalFactuality
+        });
+      } else {
+        onUpdate({ 
+          status: 'completed', 
+          report,
+          factualityResult
+        });
+      }
 
     } catch (err: any) {
       throw err;
