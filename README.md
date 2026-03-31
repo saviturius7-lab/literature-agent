@@ -1,7 +1,5 @@
 # Literature Agent
 
-![License: Apache-2.0](https://img.shields.io/badge/License-Apache%202.0-blue.svg) ![Node.js](https://img.shields.io/badge/Node.js-18%2B-339933.svg) ![TypeScript](https://img.shields.io/badge/TypeScript-5.x-3178C6.svg) ![React](https://img.shields.io/badge/React-19-61DAFB.svg)
-
 A production-oriented, multi-agent research workflow application that turns a broad idea into a structured, evidence-backed research report.
 
 Literature Agent combines automated literature retrieval, hypothesis generation, experiment planning, synthetic/real-data experimentation, adversarial review, and factuality verification in a single end-to-end pipeline.
@@ -31,19 +29,6 @@ Literature Agent combines automated literature retrieval, hypothesis generation,
 19. [Build and Deployment Notes](#build-and-deployment-notes)
 20. [Contributing](#contributing)
 21. [License](#license)
-
----
-
-## Quick Start (90 seconds)
-
-```bash
-npm install
-cp .env.example .env
-# Add at least one valid model key in .env
-npm run dev
-```
-
-Then open the app, enter a research topic, and run the workflow end-to-end.
 
 ---
 
@@ -250,16 +235,6 @@ Optional but recommended:
 ## Environment Variables
 
 Create a local `.env` (or equivalent) and configure values appropriate for your runtime.
-
-Example:
-
-```env
-VITE_GEMINI_API_KEY=your_gemini_key_here
-VITE_DEEPSEEK_API_KEY_1=your_deepseek_key_here
-KAGGLE_USERNAME=your_kaggle_username
-KAGGLE_KEY=your_kaggle_key
-KAGGLE_API_TOKEN=optional_token
-```
 
 ### Core keys
 
@@ -495,4 +470,6 @@ Recommended contribution areas:
 
 ## License
 
-This project is licensed under the **Apache License 2.0**. See [`LICENSE`](./LICENSE) for the full license text.
+No explicit license file is currently included in this repository.
+
+If you intend to distribute or open-source this project, add a license (for example MIT, Apache-2.0, or proprietary terms) before release.
