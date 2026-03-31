@@ -470,4 +470,6 @@ Recommended contribution areas:
 
 ## License
 
-This project is licensed under the **Apache License 2.0**. See [`LICENSE`](./LICENSE) for the full license text.
+No explicit license file is currently included in this repository.
+
+If you intend to distribute or open-source this project, add a license (for example MIT, Apache-2.0, or proprietary terms) before release.
