@@ -225,6 +225,8 @@ export class KeyRotator {
           const hedgingPromise = new Promise<T>((resolve, reject) => {
             hedgingTimer = setTimeout(async () => {
               try {
+                if (this.activeTotal >= this.options.maxConcurrencyTotal) return;
+                
                 const hedgeStats = await this.selectBestKey();
                 if (hedgeStats && hedgeStats.key !== stats.key) {
                   hedgeStats.concurrency++;

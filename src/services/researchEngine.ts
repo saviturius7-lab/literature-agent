@@ -110,7 +110,13 @@ export class ResearchEngine {
 
         // 5b. Execution
         onUpdate({ status: 'experimenting' });
-        const experiment = await ExperimentRunner.runExperiment(hypothesis, design.plan, config);
+        const experimentConfig: ExperimentConfig = {
+          ...config,
+          kaggleDataset: design.dataset.kaggleDataset,
+          targetColumn: design.dataset.targetColumn,
+          topic: refinedTopic
+        };
+        const experiment = await ExperimentRunner.runExperiment(hypothesis, design.plan, experimentConfig);
         finalExperiment = experiment;
         onUpdate({ experiment });
 
@@ -154,16 +160,18 @@ export class ResearchEngine {
       
       onUpdate({ status: 'verifying_report', report });
       
-      // Adversarial Review Phase
-      const reviewerCritiques = await ReviewerAgent.review(report, papers);
-      const factualityResult = await FactualityEvalAgent.evaluate(report, papers);
+      // Adversarial Review Phase (Parallelized)
+      const [reviewerCritiques, factualityResult] = await Promise.all([
+        ReviewerAgent.review(report, papers),
+        FactualityEvalAgent.evaluate(report, papers)
+      ]);
       
       // If report is poor or has factuality issues, attempt ONE refinement
       const avgRating = reviewerCritiques.reduce((acc, c) => acc + c.rating, 0) / reviewerCritiques.length;
       
       if (avgRating < 6 || !factualityResult.isPassed) {
         onUpdate({ status: 'refining_report', report });
-        onProgress(`Report quality issues detected (Rating: ${avgRating.toFixed(1)}, Factuality: ${factualityResult.faithfulnessScore.toFixed(2)}). Refining...`);
+        onProgress(`Report quality issues detected (Rating: ${(avgRating || 0).toFixed(1)}, Factuality: ${(factualityResult?.faithfulnessScore || 0).toFixed(2)}). Refining...`);
         
         report = await ReportAgent.refineReport(
           report,

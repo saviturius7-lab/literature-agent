@@ -1,4 +1,5 @@
 import { KeyRotator, KeyStats } from "./keyRotator";
+import { sanitizeJSON } from "../lib/jsonUtils";
 
 function collectDeepSeekKeys(): string[] {
   const collected: string[] = [];
@@ -170,7 +171,9 @@ export async function generateDeepSeekJSON<T>(prompt: string, systemInstruction?
             ...(systemInstruction ? [{ role: "system", content: systemInstruction }] : []),
             { role: "user", content: prompt }
           ],
-          response_format: { type: "json_object" }
+          response_format: { type: "json_object" },
+          max_tokens: 8192,
+          temperature: 0.2
         })
       }),
       60000 // 60s timeout for DeepSeek
@@ -185,11 +188,10 @@ export async function generateDeepSeekJSON<T>(prompt: string, systemInstruction?
     const content = data.choices[0].message.content;
     
     try {
-      return JSON.parse(content) as T;
+      return JSON.parse(sanitizeJSON(content)) as T;
     } catch (e) {
-      // Handle potential markdown in content
-      const cleaned = content.replace(/```json\n?|```/g, "").trim();
-      return JSON.parse(cleaned) as T;
+      console.error("[DeepSeek] JSON parse error:", e);
+      throw e;
     }
   }, deepSeekErrorHandler);
 }

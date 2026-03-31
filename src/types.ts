@@ -17,6 +17,7 @@ export interface Paper {
   link: string;
   citation: string;
   verified?: boolean;
+  embedding?: number[];
   chunks?: Chunk[];
   keyFindings?: string[];
 }
@@ -46,6 +47,8 @@ export interface DatasetCard {
   features: string[];
   size: string;
   source: string;
+  kaggleDataset?: string;
+  targetColumn?: string;
 }
 
 export interface MathFormalization {
@@ -79,6 +82,9 @@ export interface ExperimentConfig {
   noiseLevel?: number;
   featureComplexity?: number;
   dataType?: 'classification' | 'regression' | 'clustering';
+  kaggleDataset?: string;
+  targetColumn?: string;
+  topic?: string;
 }
 
 export interface ExperimentResult {

@@ -1,6 +1,7 @@
-import { GoogleGenAI } from "@google/genai";
+import { GoogleGenAI, ThinkingLevel } from "@google/genai";
 import { generateDeepSeekJSON, getDeepSeekStatus as getDSStatus } from "./deepseek";
 import { KeyRotator, KeyStats } from "./keyRotator";
+import { sanitizeJSON } from "../lib/jsonUtils";
 
 // Helper to collect keys from import.meta.env
 function collectKeys(): string[] {
@@ -61,38 +62,7 @@ function collectKeys(): string[] {
   } catch (e) { /* ignore */ }
 
   // User-provided keys as fallback (from chat)
-  const userProvidedKeys = [
-    "AIzaSyAscE7qpO5IZcjIctbyxYZ3ERQJdxRSgnk",
-    "AIzaSyCxPE-uP8CUVv_tOKPkOXF3ZPSRcxoE0oo",
-    "AIzaSyBZjETHyNk9QI4iXNGMec7VwHTX2110kmQ",
-    "AIzaSyDpn0RohyZaVVVY7CEPcKhr3-TWdMQeKrE",
-    "AIzaSyDF2laJ6hy875h17wrZIg-G6UxLJDv-XRY",
-    "AIzaSyCobkYzeueivS6v1R00vn6JkMVFOtednfc",
-    "AIzaSyBpvIXZ2IBsaPcFkDU_mxovCUBqmHLRlNo",
-    "AIzaSyDoLJXORMkjqJhTHhLkb2E39KQZe4fmrBc",
-    "AIzaSyAI94H0iG_c-0gvvts9r92DfDKad4owHQI",
-    "AIzaSyAYpPN8NaBB8fJrK58kHcRPxyQUP1BJBjE",
-    "AIzaSyDjyuv7xlDtSHl3Jzhxg0rMpoAxiWzcB4g",
-    "AIzaSyD3x7bWHqFSoYojS3G7hsd1c6RL3WdxzWg",
-    "AIzaSyCsoqAaQj0wToGXLoK8MQY9dQlSNBf6aNU",
-    "AIzaSyBRDm23IIGu1HEHCTIAy6_dlCHVBa4AEfQ",
-    "AIzaSyBdb_oz3bGwLZC2eeXYZkA1t8g0Yd1DL_0",
-    "AIzaSyBaEfsn5Ray8aeMwufaXRccRsmN0dapfjw",
-    "AIzaSyBteVlremEpfDDAvIhWktEJVnte3RK4Uj4",
-    "AIzaSyBow6z69tN1M2TCO54TA1nrLooiRMIuT1o",
-    "AIzaSyCEQDWfVI3kWdIcAWMHkRDTWrMS3srx8yE",
-    "AIzaSyAd_UMBF6PH82pL3c6vl4JFtB_xpqUyU3Y",
-    "AIzaSyAd_UMBF6PH82pL3c6vl4JFtB_xpqUyU3Y",
-    "AIzaSyAZ62qaQAI1hTq3zhOSgyiev1USx_t7u4c",
-    "AIzaSyB5Te5obYowQRbVXPqagW0fzOPNwRl7jcc",
-    "AIzaSyCkgbfegyDfjBtwyLFcBUoqOGhpQy6kzHI",
-    "AIzaSyDbLE7loopdKMBPqDWaS-Uakz8Z_bk55wE",
-    "AIzaSyALO7hcpcNpN8eYMmBvDy1hdwwn4J6Z450",
-    "AIzaSyCeSYcC3zuOAAHYuCjq8gcsnPReEflIXxY",
-    "AIzaSyBgzg0OMzjR38Rmurfr535xHbTjMDigYoI",
-    "AIzaSyA7N2DTMf8AUUagRqvtvMfOKCkrp1wuIJc",
-    "AIzaSyBCixgCeBfR1oL4fHA2YmATfwfr8B6Xkac"
-  ];
+  const userProvidedKeys: string[] = [];
   collected.push(...userProvidedKeys);
 
   const uniqueKeys = Array.from(new Set(collected)).filter(k => {
@@ -201,57 +171,48 @@ export async function embedText(text: string): Promise<number[]> {
 export async function embedTexts(texts: string[]): Promise<number[][]> {
   if (texts.length === 0) return [];
   
-  return withRetry(async (ai) => {
-    const response = await ai.models.embedContent({
-      model: 'gemini-embedding-2-preview',
-      contents: texts,
-    });
-    return response.embeddings.map(e => e.values);
-  });
-}
-
-function sanitizeJSON(text: string): string {
-  // More professional JSON sanitization
-  let cleaned = text.trim();
-  
-  // Remove markdown code blocks if present
-  const jsonMatch = cleaned.match(/```json\n?([\s\S]*?)\n?```/);
-  if (jsonMatch) {
-    cleaned = jsonMatch[1];
-  } else {
-    // Try to find the first '{' and last '}'
-    const firstBrace = cleaned.indexOf('{');
-    const lastBrace = cleaned.lastIndexOf('}');
-    const firstBracket = cleaned.indexOf('[');
-    const lastBracket = cleaned.lastIndexOf(']');
-    
-    const start = (firstBrace !== -1 && (firstBracket === -1 || firstBrace < firstBracket)) ? firstBrace : firstBracket;
-    const end = (lastBrace !== -1 && (lastBracket === -1 || lastBrace > lastBracket)) ? lastBrace : lastBracket;
-    
-    if (start !== -1 && end !== -1) {
-      cleaned = cleaned.slice(start, end + 1);
-    }
+  // Professional Batching: Gemini embedding limit is often 2048, but 100 is safer for payload size and latency
+  const BATCH_SIZE = 100;
+  const batches: string[][] = [];
+  for (let i = 0; i < texts.length; i += BATCH_SIZE) {
+    batches.push(texts.slice(i, i + BATCH_SIZE));
   }
-
-  // Handle common LLM JSON errors (like trailing commas)
-  return cleaned
-    .replace(/,\s*([}\]])/g, '$1') // Remove trailing commas
-    .trim();
+  
+  // Parallelize batches to fully utilize the key pool and reduce latency
+  const results = await Promise.all(batches.map(batch => 
+    withRetry(async (ai) => {
+      return await withTimeout(
+        (async () => {
+          const response = await ai.models.embedContent({
+            model: 'gemini-embedding-2-preview',
+            contents: batch,
+          });
+          return response.embeddings.map(e => e.values);
+        })(),
+        30000 // 30s timeout per batch
+      );
+    })
+  ));
+  
+  return results.flat();
 }
+
+export { sanitizeJSON };
 
 async function withTimeout<T>(promise: Promise<T>, timeoutMs: number): Promise<T> {
-  const controller = new AbortController();
-  const id = setTimeout(() => controller.abort(), timeoutMs);
+  let timeoutId: any;
+  const timeoutPromise = new Promise<T>((_, reject) => {
+    timeoutId = setTimeout(() => {
+      reject(new Error(`Request timed out after ${timeoutMs}ms`));
+    }, timeoutMs);
+  });
   
   try {
-    const result = await promise;
-    clearTimeout(id);
+    const result = await Promise.race([promise, timeoutPromise]);
+    clearTimeout(timeoutId);
     return result;
   } catch (error: any) {
-    clearTimeout(id);
-    if (error.name === 'AbortError') {
-      throw new Error(`Request timed out after ${timeoutMs}ms`);
-    }
+    clearTimeout(timeoutId);
     throw error;
   }
 }
@@ -277,7 +238,11 @@ export async function generateJSON<T>(prompt: string, systemInstruction?: string
             contents: prompt,
             config: { 
               systemInstruction,
-              responseMimeType: "application/json"
+              responseMimeType: "application/json",
+              maxOutputTokens: 16384,
+              thinkingConfig: {
+                thinkingLevel: model.includes("pro") ? ThinkingLevel.HIGH : ThinkingLevel.LOW
+              }
             },
           });
           return response.text || "{}";
@@ -324,7 +289,13 @@ export async function generateText(prompt: string, systemInstruction?: string): 
     const response = await ai.models.generateContent({
       model: "gemini-3-flash-preview",
       contents: prompt,
-      config: { systemInstruction },
+      config: { 
+        systemInstruction,
+        maxOutputTokens: 16384,
+        thinkingConfig: {
+          thinkingLevel: ThinkingLevel.LOW
+        }
+      },
     });
     return response.text || "";
   });

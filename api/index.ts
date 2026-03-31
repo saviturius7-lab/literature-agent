@@ -1,11 +1,16 @@
 import express from "express";
 import path from "path";
+import { spawn } from 'child_process';
 import { RandomForestClassifier } from 'ml-random-forest';
 import LogisticRegression from 'ml-logistic-regression';
 import KNN from 'ml-knn';
 import { GaussianNB } from 'ml-naivebayes';
 import { Matrix } from 'ml-matrix';
 import { ConfusionMatrix } from 'ml-confusion-matrix';
+import AdmZip from 'adm-zip';
+import Papa from 'papaparse';
+import fs from 'fs';
+import os from 'os';
 
 const app = express();
 app.use(express.json());
@@ -68,21 +73,21 @@ class TabularPredictor {
     // We'll use Logistic Regression as a meta-learner to combine base model predictions
     console.log(`[AutoGluon] Training Layer 1 Meta-Learner (WeightedEnsemble_L2)...`);
     
-    const basePredictions = this.baseModels.map(m => {
-      if (m.name === 'RandomForest') return m.model.predict(trainX);
-      if (m.name === 'KNeighbors') return m.model.predict(trainX);
-      if (m.name === 'GaussianNB') return m.model.predict(trainX);
-      return [];
-    });
+    const basePredictions = this.baseModels.map(m => m.model.predict(trainX));
 
     // Transpose base predictions to get meta-features
     const metaFeatures = trainX.map((_, i) => basePredictions.map(p => p[i]));
     
-    const metaLearner = new (LogisticRegression as any)({ numSteps: 1000, learningRate: 0.01 });
-    const metaXMatrix = new Matrix(metaFeatures);
-    const metaYMatrix = new Matrix([trainY]).transpose();
-    metaLearner.train(metaXMatrix, metaYMatrix);
-    this.metaLearner = metaLearner;
+    if (this.dataType === 'classification') {
+      const metaLearner = new (LogisticRegression as any)({ numSteps: 1000, learningRate: 0.01 });
+      const metaXMatrix = new Matrix(metaFeatures);
+      const metaYMatrix = new Matrix([trainY]).transpose();
+      metaLearner.train(metaXMatrix, metaYMatrix);
+      this.metaLearner = metaLearner;
+    } else {
+      // For regression, meta-learner is a simple weighted average (handled in predict)
+      this.metaLearner = { predict: () => new Matrix(trainX.length, 1) }; 
+    }
 
     // 4. Calculate Feature Importance (Simulated via permutation-like logic)
     for (let i = 0; i < numFeatures; i++) {
@@ -98,20 +103,27 @@ class TabularPredictor {
    */
   predict(testX: number[][]): number[] {
     // Get predictions from all base models
-    const basePredictions = this.baseModels.map(m => {
-      if (m.name === 'RandomForest') return m.model.predict(testX);
-      if (m.name === 'KNeighbors') return m.model.predict(testX);
-      if (m.name === 'GaussianNB') return m.model.predict(testX);
-      return [];
-    });
+    const basePredictions = this.baseModels.map(m => m.model.predict(testX));
 
     // Create meta-features for the test set
     const metaFeatures = testX.map((_, i) => basePredictions.map(p => p[i]));
     const metaXMatrix = new Matrix(metaFeatures);
     
     // Use meta-learner for final prediction
-    const metaPredMatrix = this.metaLearner.predict(metaXMatrix);
-    const metaPredArray = metaPredMatrix.to1DArray();
+    const metaPred = this.metaLearner.predict(metaXMatrix);
+    
+    // Handle both Matrix and Array return types from meta-learner
+    let metaPredArray: number[];
+    if (Array.isArray(metaPred)) {
+      metaPredArray = metaPred;
+    } else if (typeof metaPred.to1DArray === 'function') {
+      metaPredArray = metaPred.to1DArray();
+    } else if (typeof metaPred.toArray === 'function') {
+      const arr = metaPred.toArray();
+      metaPredArray = Array.isArray(arr[0]) ? arr.map((row: any) => row[0]) : arr;
+    } else {
+      metaPredArray = Array.from(metaPred as any);
+    }
     
     if (this.dataType === 'classification') {
       return metaPredArray.map((v: number) => v > 0.5 ? 1 : 0);
@@ -147,6 +159,154 @@ class TabularPredictor {
   }
 }
 
+/**
+ * Kaggle API Service
+ * Handles dataset discovery and downloading.
+ */
+class KaggleService {
+  private username: string | undefined;
+  private key: string | undefined;
+  private apiToken: string | undefined;
+
+  constructor() {
+    this.username = process.env.KAGGLE_USERNAME;
+    this.key = process.env.KAGGLE_KEY;
+    this.apiToken = process.env.KAGGLE_API_TOKEN;
+  }
+
+  async downloadDataset(owner: string, dataset: string, filename?: string): Promise<string> {
+    if (!this.apiToken && (!this.username || !this.key)) {
+      throw new Error("KAGGLE_API_TOKEN or (KAGGLE_USERNAME and KAGGLE_KEY) are required in environment variables.");
+    }
+
+    const headers: Record<string, string> = {
+      'User-Agent': 'ResearchAgent/1.0'
+    };
+    if (this.apiToken) {
+      // Some Kaggle API versions use Bearer, others use X-Kaggle-Api-Token
+      headers['Authorization'] = `Bearer ${this.apiToken}`;
+      headers['X-Kaggle-Api-Token'] = this.apiToken;
+    } else {
+      const auth = Buffer.from(`${this.username}:${this.key}`).toString('base64');
+      headers['Authorization'] = `Basic ${auth}`;
+    }
+
+    const url = `https://www.kaggle.com/api/v1/datasets/download/${owner}/${dataset}${filename ? `/${filename}` : ''}`;
+    
+    console.log(`[Kaggle] Downloading dataset: ${owner}/${dataset}${filename ? `/${filename}` : ''}`);
+    
+    const response = await fetch(url, { headers });
+
+    if (!response.ok) {
+      const errorText = await response.text();
+      if (response.status === 403) {
+        throw new Error(`Kaggle API returned 403 (Forbidden). This often means you need to accept the dataset terms on Kaggle.com or your credentials are invalid. Details: ${errorText}`);
+      }
+      throw new Error(`Kaggle API returned ${response.status}: ${errorText}`);
+    }
+
+    const buffer = await response.arrayBuffer();
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'kaggle-'));
+    const zipPath = path.join(tempDir, 'dataset.zip');
+    fs.writeFileSync(zipPath, Buffer.from(buffer));
+
+    // If it's a zip, unzip it
+    if (!filename || filename.endsWith('.zip')) {
+      const zip = new AdmZip(zipPath);
+      zip.extractAllTo(tempDir, true);
+      
+      // Find the first CSV file
+      const files = fs.readdirSync(tempDir);
+      const csvFile = files.find(f => f.endsWith('.csv'));
+      if (!csvFile) {
+        throw new Error("No CSV file found in the Kaggle dataset.");
+      }
+      return fs.readFileSync(path.join(tempDir, csvFile), 'utf8');
+    }
+
+    return fs.readFileSync(zipPath, 'utf8');
+  }
+}
+
+const kaggle = new KaggleService();
+
+  // Global ArXiv Queue to strictly respect rate limits (1 request per 3s)
+  const arxivQueue: { url: string, resolve: (data: string) => void, reject: (err: any) => void }[] = [];
+  let isProcessingArxiv = false;
+
+  async function processArxivQueue() {
+    if (isProcessingArxiv || arxivQueue.length === 0) return;
+    isProcessingArxiv = true;
+    
+    console.log(`[ArXiv Queue] Starting processing. Tasks in queue: ${arxivQueue.length}`);
+    
+    try {
+      while (arxivQueue.length > 0) {
+        const task = arxivQueue.shift();
+        if (!task) continue;
+
+        const { url, resolve, reject } = task;
+        console.log(`[ArXiv Queue] Processing task: ${url.split('search_query=')[1]?.split('&')[0] || 'unknown'}`);
+        
+        const fetchWithRetry = async (retries = 3, delay = 10000): Promise<string> => {
+          const controller = new AbortController();
+          const timeoutId = setTimeout(() => controller.abort(), 60000); // 60s timeout per attempt
+          
+          try {
+            const response = await fetch(url, {
+              headers: { "User-Agent": "ResearchAgent/1.0" },
+              signal: controller.signal
+            });
+            
+            clearTimeout(timeoutId);
+            
+            if (response.status === 429 && retries > 0) {
+              console.warn(`[ArXiv Queue] 429 detected. Backing off for ${delay}ms...`);
+              await new Promise(r => setTimeout(r, delay));
+              return fetchWithRetry(retries - 1, delay * 1.5);
+            }
+            
+            if (!response.ok) {
+              throw new Error(`ArXiv API returned ${response.status}`);
+            }
+            
+            return await response.text();
+          } catch (error: any) {
+            clearTimeout(timeoutId);
+            if ((error.name === 'AbortError' || error.message?.toLowerCase().includes('timeout')) && retries > 0) {
+              console.warn(`[ArXiv Queue] Timeout/Abort detected. Retrying in ${delay}ms...`);
+              await new Promise(r => setTimeout(r, delay));
+              return fetchWithRetry(retries - 1, delay);
+            }
+            throw error;
+          }
+        };
+
+        try {
+          const data = await fetchWithRetry();
+          resolve(data);
+          console.log(`[ArXiv Queue] Task completed successfully.`);
+        } catch (err) {
+          console.error(`[ArXiv Queue] Task failed:`, err);
+          reject(err);
+        }
+
+        // Wait 5 seconds before next request to be safe (ArXiv limit is 1 req / 3s)
+        // We use 5s to account for potential concurrent instances sharing the same IP
+        if (arxivQueue.length > 0) {
+          await new Promise(r => setTimeout(r, 5000));
+        }
+      }
+    } finally {
+      isProcessingArxiv = false;
+      console.log(`[ArXiv Queue] Processing finished. Remaining in queue: ${arxivQueue.length}`);
+      // Safety check: if something was added while we were finishing, restart
+      if (arxivQueue.length > 0) {
+        processArxivQueue();
+      }
+    }
+  }
+
   // API Proxy for arXiv to bypass CORS
   app.get("/api/arxiv", async (req, res) => {
     const { q } = req.query;
@@ -158,36 +318,24 @@ class TabularPredictor {
   
     const url = `https://export.arxiv.org/api/query?search_query=${encodeURIComponent(query as string)}&start=0&max_results=30&sortBy=relevance&sortOrder=descending`;
     
-    // 12s timeout for upstream ArXiv
-    const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 12000);
-
-    try {
-      const response = await fetch(url, {
-        headers: { "User-Agent": "ResearchAgent/1.0" },
-        signal: controller.signal
-      });
-      
-      clearTimeout(timeoutId);
-
-      if (!response.ok) {
-        console.error(`[ArXiv Proxy] Upstream error: ${response.status} for query: ${query}`);
-        return res.status(response.status).json({ error: `ArXiv API returned ${response.status}` });
-      }
-  
-      const data = await response.text();
+    console.log(`[ArXiv Proxy] Enqueuing query: ${query} (Queue size: ${arxivQueue.length + 1})`);
+    
+    new Promise<string>((resolve, reject) => {
+      arxivQueue.push({ url, resolve, reject });
+      processArxivQueue();
+    })
+    .then(data => {
       res.set("Content-Type", "application/xml");
       res.send(data);
-    } catch (error: any) {
-      clearTimeout(timeoutId);
-      if (error.name === 'AbortError') {
-        console.error(`[ArXiv Proxy] Upstream timeout for query: ${query}`);
+    })
+    .catch(error => {
+      console.error(`[ArXiv Proxy] Error for ${query}:`, error);
+      if (error.message?.includes("timeout") || error.name === 'AbortError') {
         res.status(504).json({ error: "ArXiv API request timed out" });
       } else {
-        console.error(`[ArXiv Proxy] Error:`, error);
-        res.status(500).json({ error: "Failed to fetch from arXiv" });
+        res.status(500).json({ error: error.message || "Failed to fetch from arXiv" });
       }
-    }
+    });
   });
 
 app.post("/api/run-experiment", async (req, res) => {
@@ -203,16 +351,105 @@ app.post("/api/run-experiment", async (req, res) => {
   try {
     console.log(`[Backend] Running actual ML experiment for: ${hypothesis?.title || "Untitled"}`);
     
+    // Try Python first
+    try {
+      console.log("[Backend] Attempting Python experiment execution...");
+      const pythonResult = await new Promise<any>((resolve, reject) => {
+        const pythonProcess = spawn('python3', [path.join(process.cwd(), 'api', 'experiment.py')]);
+        let data = '';
+        let error = '';
+
+        pythonProcess.stdin.write(JSON.stringify({ hypothesis, plan, config }));
+        pythonProcess.stdin.end();
+
+        pythonProcess.stdout.on('data', (chunk) => {
+          data += chunk.toString();
+        });
+
+        pythonProcess.stderr.on('data', (chunk) => {
+          error += chunk.toString();
+        });
+
+        pythonProcess.on('close', (code) => {
+          if (code !== 0) {
+            reject(new Error(`Python process exited with code ${code}: ${error}`));
+            return;
+          }
+          try {
+            resolve(JSON.parse(data));
+          } catch (e) {
+            reject(new Error(`Failed to parse Python output: ${data}`));
+          }
+        });
+      });
+
+      if (pythonResult.error) {
+        throw new Error(pythonResult.error);
+      }
+
+      console.log("[Backend] Python experiment completed successfully.");
+      return res.json(pythonResult);
+    } catch (pythonErr: any) {
+      console.warn("[Backend] Python experiment failed, falling back to TypeScript:", pythonErr.message);
+      // Continue to TypeScript implementation
+    }
+
     // 1. Data Preparation
     let X: number[][] = [];
     let y: number[] = [];
-    const numSamples = config?.datasetSize || 1000;
-    const numFeatures = config?.featureComplexity || 10;
+    let numSamples = config?.datasetSize || 1000;
+    let numFeatures = config?.featureComplexity || 10;
     const noiseLevel = config?.noiseLevel || 0.05;
     const dataType = config?.dataType || 'classification';
 
     try {
-      // Synthetic data generation: Objective and domain-driven
+      if (config?.kaggleDataset) {
+        try {
+          // Use real Kaggle data
+          const [owner, dataset] = config.kaggleDataset.split('/');
+          const csvContent = await kaggle.downloadDataset(owner, dataset);
+          const parsed = Papa.parse(csvContent, { header: true, dynamicTyping: true });
+          
+          if (parsed.errors.length > 0) {
+            console.warn("[Kaggle] PapaParse errors:", parsed.errors);
+          }
+
+          const data = (parsed.data as any[]).filter(row => row && Object.values(row).every(v => v !== null && v !== undefined));
+          
+          if (data.length > 0) {
+            // Simple heuristic to find target and features
+            const columns = Object.keys(data[0]);
+            const targetCol = config.targetColumn || columns[columns.length - 1];
+            const featureCols = columns.filter(c => c !== targetCol).slice(0, numFeatures);
+            
+            console.log(`[Kaggle] Using target: ${targetCol}, features: ${featureCols.join(', ')}`);
+
+            X = data.map(row => featureCols.map(c => typeof row[c] === 'number' ? row[c] : 0));
+            y = data.map(row => {
+              const val = row[targetCol];
+              if (dataType === 'classification') {
+                return typeof val === 'number' ? (val > 0 ? 1 : 0) : (val ? 1 : 0);
+              }
+              return typeof val === 'number' ? val : 0;
+            });
+
+            numSamples = X.length;
+            numFeatures = featureCols.length;
+            console.log(`[Kaggle] Successfully loaded ${numSamples} samples from ${config.kaggleDataset}`);
+          } else {
+            throw new Error("Kaggle dataset is empty or invalid.");
+          }
+        } catch (kaggleErr: any) {
+          console.error("[Kaggle] Failed to load dataset, falling back to synthetic data:", kaggleErr.message);
+          // We don't throw here, we just continue to the synthetic generation block
+          // But we mark it so we can add a log entry later
+          (hypothesis as any).kaggleError = kaggleErr.message;
+        }
+      }
+      
+      // If X is still empty, generate synthetic data (either as primary or as fallback)
+      if (X.length === 0) {
+        // Synthetic data generation: Objective and domain-driven
       // We use the topic to seed the "world" but not the hypothesis to seed the "outcome"
       const topicText = (config?.topic || "general").toLowerCase();
       
@@ -261,7 +498,8 @@ app.post("/api/run-experiment", async (req, res) => {
           y.push(centerIdx);
         }
       }
-    } catch (dataErr: any) {
+    }
+  } catch (dataErr: any) {
       console.error("[Backend] Data preparation failed:", dataErr);
       return res.status(500).json({ 
         error: `Data preparation failed: ${dataErr.message}`,
@@ -371,13 +609,21 @@ app.post("/api/run-experiment", async (req, res) => {
     }
     
     // 3. Format Response
-    const bestModel = results[0];
+    const bestModel = results[0] || {
+      accuracy: 0,
+      f1Score: 0,
+      precision: 0,
+      recall: 0,
+      leaderboard: [],
+      featureImportance: {},
+      name: "None"
+    };
     
     res.json({
-      accuracy: bestModel.accuracy,
-      f1Score: bestModel.f1Score,
-      precision: bestModel.precision,
-      recall: bestModel.recall,
+      accuracy: bestModel.accuracy || 0,
+      f1Score: bestModel.f1Score || 0,
+      precision: bestModel.precision || 0,
+      recall: bestModel.recall || 0,
       baselines: results.slice(1).map(r => ({
         name: r.name,
         accuracy: r.accuracy,

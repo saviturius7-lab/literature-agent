@@ -58,6 +58,39 @@ export const TopicRefinementAgent = {
   }
 };
 
+function decodeInvertedIndex(index: any): string {
+  if (!index) return "";
+  try {
+    const words = Object.keys(index);
+    if (words.length === 0) return "";
+    
+    // Find the maximum index to determine the array size
+    let maxIdx = 0;
+    for (const word of words) {
+      const indices = index[word];
+      if (Array.isArray(indices)) {
+        for (const idx of indices) {
+          if (idx > maxIdx) maxIdx = idx;
+        }
+      }
+    }
+    
+    const result = new Array(maxIdx + 1).fill("");
+    for (const word of words) {
+      const indices = index[word];
+      if (Array.isArray(indices)) {
+        for (const idx of indices) {
+          result[idx] = word;
+        }
+      }
+    }
+    return result.join(" ").trim();
+  } catch (e) {
+    console.warn("Failed to decode inverted index:", e);
+    return "";
+  }
+}
+
 export const SearchQueryAgent = {
   async refineQuery(topic: string): Promise<string> {
     const prompt = `You are a research query optimization expert for the arXiv API.
@@ -125,44 +158,83 @@ export const LiteratureAgent = {
     };
 
     try {
-      onProgress?.("Initializing 'The Research Hive' multi-source discovery engine...");
-      
+      onProgress?.(`Refining search topic: "${topic}"...`);
       const [refinedQuery, broadKeywords] = await Promise.all([
         SearchQueryAgent.refineQuery(topic),
         SearchQueryAgent.getBroadKeywords(topic).catch(() => [])
       ]);
 
+      console.log(`[LiteratureAgent] Refined Query: "${refinedQuery}"`);
+      console.log(`[LiteratureAgent] Broad Keywords: ${JSON.stringify(broadKeywords)}`);
+
+      // Limit strategies to avoid excessive wait times
       const searchStrategies = Array.from(new Set([
         topic,
         refinedQuery,
         ...broadKeywords
-      ])).filter(q => q && q.length > 2);
+      ])).filter(q => q && q.length > 2).slice(0, 8);
 
-      // 1. Parallel Multi-Source Search (ArXiv + OpenAlex)
-      onProgress?.(`Searching ArXiv and OpenAlex with ${searchStrategies.length} strategies in parallel...`);
+      onProgress?.(`Searching ArXiv and OpenAlex with ${searchStrategies.length} strategies...`);
+      console.log(`[LiteratureAgent] Search Strategies: ${JSON.stringify(searchStrategies)}`);
       
+      let completedStrategies = 0;
       const searchPromises = searchStrategies.map(async (query, i) => {
-        // Minimal staggering to avoid ArXiv burst limits, but much faster than before
-        if (i > 0) await new Promise(r => setTimeout(r, 500 * i));
+        // Stagger OpenAlex calls slightly
+        await new Promise(r => setTimeout(r, 500 * i));
         
-        const [arxivResults, openAlexResults] = await Promise.all([
-          this.executeArXivSearch(query).catch(() => []),
-          this.executeOpenAlexSearch(query).catch(() => [])
-        ]);
-        return [...arxivResults, ...openAlexResults];
+        try {
+          const openAlexResults = await this.executeOpenAlexSearch(query).catch((e) => {
+            console.warn(`[LiteratureAgent] OpenAlex failed for "${query}":`, e);
+            return [];
+          });
+
+          // ArXiv stagger - the proxy queue handles the hard rate limit, 
+          // so we just need enough stagger to not flood the proxy all at once.
+          const arxivDelay = 1000 * i;
+          
+          console.log(`[LiteratureAgent] Strategy ${i}: "${query}" (ArXiv delay: ${arxivDelay}ms)`);
+          
+          // Wait for the staggered ArXiv slot
+          await new Promise(r => setTimeout(r, arxivDelay));
+          const arxivResults = await this.executeArXivSearch(query).catch((e) => {
+            console.warn(`[LiteratureAgent] ArXiv failed for "${query}":`, e);
+            return [];
+          });
+
+          return [...arxivResults, ...openAlexResults];
+        } finally {
+          completedStrategies++;
+          onProgress?.(`Literature search: ${completedStrategies}/${searchStrategies.length} strategies processed...`);
+        }
       });
 
       const results = await Promise.all(searchPromises);
       results.forEach(papers => addPapers(papers));
 
+      console.log(`[LiteratureAgent] Found ${allPapers.length} unique papers before fallback.`);
+
       if (allPapers.length === 0) {
         onProgress?.("No papers found. Applying emergency fallback...");
-        const fallback = await this.executeArXivSearch("machine learning fairness bias").catch(() => []);
-        addPapers(fallback);
+        console.warn(`[LiteratureAgent] Emergency fallback for topic: "${topic}"`);
+        
+        // Use a very broad version of the topic for fallback
+        const broadTopic = topic.split(' ').slice(0, 3).join(' ');
+        const fallbackResults = await Promise.all([
+          this.executeArXivSearch(broadTopic),
+          this.executeOpenAlexSearch(broadTopic),
+          this.executeArXivSearch("machine learning artificial intelligence")
+        ]);
+        fallbackResults.forEach(papers => addPapers(papers));
+      }
+
+      if (allPapers.length === 0) {
+        console.error("[LiteratureAgent] Total failure: No papers found even with fallback.");
+        return [];
       }
 
       // 2. Semantic Reranking (Fast)
       onProgress?.(`Semantic reranking ${allPapers.length} candidates...`);
+      console.log(`[LiteratureAgent] Reranking ${allPapers.length} papers...`);
       const rerankedPapers = await this.semanticRerank(topic, allPapers);
 
       // 3. Citation Expansion (Smart Discovery) - Parallelized
@@ -194,9 +266,9 @@ export const LiteratureAgent = {
     
     try {
       const xmlData = await apiClient.get<string>(url, {
-        timeout: 15000,
-        retries: 3,
-        backoff: 2000
+        timeout: 300000, // 5 minutes to allow for queue wait and proxy retries
+        retries: 1, // Proxy already retries, so client-side retry is mostly redundant
+        backoff: 3000
       });
       
       const jsonObj = parser.parse(xmlData);
@@ -229,22 +301,31 @@ export const LiteratureAgent = {
   },
 
   async executeOpenAlexSearch(query: string): Promise<Paper[]> {
-    const url = `https://api.openalex.org/works?search=${encodeURIComponent(query)}&mailto=saviturius7@gmail.com&per_page=10`;
+    const url = `https://api.openalex.org/works?search=${encodeURIComponent(query)}&mailto=saviturius7@gmail.com&per_page=15`;
     
     try {
-      const data = await apiClient.get<any>(url, { timeout: 10000 });
+      const data = await apiClient.get<any>(url, { timeout: 15000 });
       if (!data || !data.results) return [];
       
-      return data.results.map((res: any) => ({
-        title: res.title || "Untitled",
-        summary: res.abstract_inverted_index ? "Abstract available in index" : "No summary available",
-        authors: res.authorships?.map((a: any) => a.author.display_name) || ["Unknown Author"],
-        published: res.publication_date || new Date().toISOString(),
-        link: res.doi || res.id || "#",
-        citation: `${res.authorships?.[0]?.author.display_name || "Unknown"} (${res.publication_year}). ${res.title}. ${res.doi || ""}`,
-        chunks: ChunkingAgent.chunkPaper(res.title || "", "OpenAlex Paper"),
-        keyFindings: []
-      }));
+      console.log(`[LiteratureAgent] OpenAlex found ${data.results.length} results for "${query}"`);
+      
+      return data.results.map((res: any) => {
+        const title = res.title || "Untitled";
+        const abstract = decodeInvertedIndex(res.abstract_inverted_index);
+        const authors = res.authorships?.map((a: any) => a.author.display_name) || ["Unknown Author"];
+        const year = res.publication_year || "n.d.";
+        
+        return {
+          title,
+          summary: abstract || "No summary available",
+          authors,
+          published: res.publication_date || new Date().toISOString(),
+          link: res.doi || res.id || "#",
+          citation: `${authors[0] || "Unknown"} (${year}). ${title}. ${res.doi || ""}`,
+          chunks: ChunkingAgent.chunkPaper(title, abstract || "OpenAlex Paper"),
+          keyFindings: []
+        };
+      });
     } catch (error) {
       console.error(`OpenAlex search failed for "${query}":`, error);
       return [];
@@ -286,12 +367,22 @@ export const LiteratureAgent = {
     
     try {
       const topicEmbedding = await embedText(topic);
-      const paperTexts = papers.map(p => `${p.title} ${p.summary.slice(0, 200)}`);
-      const paperEmbeddings = await embedTexts(paperTexts);
       
-      const scoredPapers = papers.map((paper, i) => ({
+      // Identify papers that need embedding
+      const papersToEmbed = papers.filter(p => !p.embedding);
+      if (papersToEmbed.length > 0) {
+        const paperTexts = papersToEmbed.map(p => `${p.title} ${p.summary.slice(0, 200)}`);
+        const paperEmbeddings = await embedTexts(paperTexts);
+        
+        // Store embeddings back in the paper objects
+        papersToEmbed.forEach((p, i) => {
+          p.embedding = paperEmbeddings[i];
+        });
+      }
+      
+      const scoredPapers = papers.map((paper) => ({
         paper,
-        score: cosineSimilarity(topicEmbedding, paperEmbeddings[i])
+        score: paper.embedding ? cosineSimilarity(topicEmbedding, paper.embedding) : 0
       }));
       
       return scoredPapers
@@ -311,7 +402,7 @@ export const UnifiedPaperAnalyzerAgent = {
     try {
       // OpenAlex supports filtering by multiple titles using |
       const titles = papers.map(p => p.title.replace(/[^\w\s]/gi, '').toLowerCase().trim().slice(0, 50));
-      const filter = titles.map(t => `title.search:${encodeURIComponent(t)}`).join('|');
+      const filter = `title.search:(${titles.join('|')})`;
       const url = `https://api.openalex.org/works?filter=${filter}&mailto=saviturius7@gmail.com&per_page=50`;
       
       const data = await apiClient.get<any>(url, { 
@@ -414,6 +505,7 @@ export const UnifiedPaperAnalyzerAgent = {
     1. Relevance: Is it directly relevant or highly related?
     2. Consistency: Does the summary make sense and seem like a real paper (not a hallucination)?
     3. Key Findings: Extract 2-3 concise, technically accurate findings.
+    4. Summary: Provide a one-sentence high-level summary of the paper's core contribution.
     
     Papers:
     ${papers.map((p, i) => `[Paper ${i}] Title: ${p.title}\nSummary: ${p.summary.slice(0, 500)}...`).join("\n\n")}
@@ -425,19 +517,20 @@ export const UnifiedPaperAnalyzerAgent = {
           "index": 0, 
           "isRelevant": boolean, 
           "isConsistent": boolean, 
-          "keyFindings": ["Finding 1", "Finding 2"] 
+          "keyFindings": ["Finding 1", "Finding 2"],
+          "summary": "One sentence summary"
         },
         ...
       ]
     }`;
 
     try {
-      const result = await generateJSON<{ results: { index: number; isRelevant: boolean; isConsistent: boolean; keyFindings: string[] }[] }>(prompt, "You are a meticulous academic auditor and expert researcher.");
+      const result = await generateJSON<{ results: { index: number; isRelevant: boolean; isConsistent: boolean; keyFindings: string[]; summary: string }[] }>(prompt, "You are a meticulous academic auditor and expert researcher.");
       return result.results || [];
     } catch (e) {
       console.error(`Batch analysis failed:`, e);
       // Return default values on failure
-      return papers.map((_, i) => ({ index: i, isRelevant: true, isConsistent: true, keyFindings: [] }));
+      return papers.map((_, i) => ({ index: i, isRelevant: true, isConsistent: true, keyFindings: [], summary: papers[i].summary }));
     }
   },
 
@@ -805,6 +898,7 @@ export const DesignAgent = {
     2. Provide a rigorous mathematical formalization (notation, objective function, algorithm).
     3. Design a detailed experiment plan (protocol, datasets, baselines, metrics).
     4. Generate a Dataset Card for the primary proposed dataset.
+    5. Suggest a real Kaggle dataset (format: 'owner/dataset') that could be used for this experiment if applicable.
     
     NOTE: The implementation will use AutoGluon's TabularPredictor.
     
@@ -831,7 +925,9 @@ export const DesignAgent = {
         "description": "...",
         "features": ["..."],
         "size": "...",
-        "source": "..."
+        "source": "...",
+        "kaggleDataset": "owner/dataset (optional)",
+        "targetColumn": "column_name (optional)"
       }
     }`;
 
@@ -839,7 +935,7 @@ export const DesignAgent = {
       contributions: Contribution[];
       math: MathFormalization;
       plan: ExperimentPlan;
-      dataset: DatasetCard;
+      dataset: DatasetCard & { kaggleDataset?: string; targetColumn?: string };
     }>(prompt, "You are a senior research architect at a top AI lab.");
 
     return result;
@@ -874,8 +970,8 @@ export const ResultValidationAgent = {
     const prompt = `Validate the experimental results against the original hypothesis.
     
     Hypothesis: ${hypothesis.description}
-    Results: Accuracy ${result.accuracy.toFixed(2)}, F1 ${result.f1Score.toFixed(2)}
-    Baselines: ${(Array.isArray(result.baselines) ? result.baselines : []).map(b => `${b.name}: ${b.accuracy.toFixed(2)}`).join(", ")}
+    Results: Accuracy ${(result.accuracy || 0).toFixed(2)}, F1 ${(result.f1Score || 0).toFixed(2)}
+    Baselines: ${(Array.isArray(result.baselines) ? result.baselines : []).map(b => `${b.name}: ${(b.accuracy || 0).toFixed(2)}`).join(", ")}
     
     Does the data support the hypothesis? Is the improvement over baselines significant?
     

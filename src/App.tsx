@@ -17,7 +17,8 @@ import {
   RefreshCw,
   BarChart as BarChartIcon,
   TrendingUp,
-  PieChart as PieChartIcon
+  PieChart as PieChartIcon,
+  Database
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { clsx, type ClassValue } from 'clsx';
@@ -104,6 +105,7 @@ export default function App() {
   const [geminiStatus, setGeminiStatus] = useState(getGeminiStatus());
   const [deepseekStatus, setDeepseekStatus] = useState(getDeepSeekStatus());
   const reportRef = useRef<HTMLDivElement>(null);
+  const snapshotRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     const interval = setInterval(() => {
@@ -249,9 +251,9 @@ ${(state.report.references || []).map(ref => `- ${ref}`).join('\n')}
   };
 
   const exportPDF = () => {
-    if (!reportRef.current) return;
-
     const element = reportRef.current;
+    if (!element) return;
+    
     const opt = {
       margin: 1,
       filename: `research_report_${state.topic.replace(/\s+/g, '_').toLowerCase()}.pdf`,
@@ -262,6 +264,32 @@ ${(state.report.references || []).map(ref => `- ${ref}`).join('\n')}
 
     html2pdf().set(opt).from(element).save();
   };
+
+  const exportSnapshotPDF = (iteration: number) => {
+    const element = snapshotRef.current;
+    if (!element) return;
+
+    const opt = {
+      margin: 1,
+      filename: `research_snapshot_iter${iteration}_${state.topic.replace(/\s+/g, '_').toLowerCase()}.pdf`,
+      image: { type: 'jpeg' as const, quality: 0.98 },
+      html2canvas: { scale: 2, useCORS: true },
+      jsPDF: { unit: 'in' as const, format: 'letter' as const, orientation: 'portrait' as const }
+    };
+
+    html2pdf().set(opt).from(element).save();
+  };
+
+  // Auto-export PDF at each iteration or completion
+  useEffect(() => {
+    if (state.status === 'completed' && state.report) {
+      // Small delay to ensure DOM is updated
+      setTimeout(() => exportPDF(), 1000);
+    } else if (state.iteration > 0 && (state.status === 'revising' || state.status === 'reporting')) {
+      // Snapshot at the end of an iteration
+      setTimeout(() => exportSnapshotPDF(state.iteration), 1000);
+    }
+  }, [state.iteration, state.status === 'completed']);
 
   const currentStepIndex = React.useMemo(() => steps.findIndex(s => {
     if (state.status === 'verifying_citations') return s.id === 'searching';
@@ -567,11 +595,11 @@ ${(state.report.references || []).map(ref => `- ${ref}`).join('\n')}
 
                 <div className="grid grid-cols-2 gap-6 mb-8">
                   <div className="p-4 bg-dark-bg/50 rounded-xl border border-pink-pale/5">
-                    <div className="text-3xl font-light mb-1 text-pink-deep">{(state.experiment.accuracy * 100).toFixed(1)}%</div>
+                    <div className="text-3xl font-light mb-1 text-pink-deep">{((state.experiment?.accuracy || 0) * 100).toFixed(1)}%</div>
                     <div className="text-[10px] uppercase tracking-wider text-pink-pale/40">Accuracy</div>
                   </div>
                   <div className="p-4 bg-dark-bg/50 rounded-xl border border-pink-pale/5">
-                    <div className="text-3xl font-light mb-1 text-pink-deep">{(state.experiment.f1Score * 100).toFixed(1)}%</div>
+                    <div className="text-3xl font-light mb-1 text-pink-deep">{((state.experiment?.f1Score || 0) * 100).toFixed(1)}%</div>
                     <div className="text-[10px] uppercase tracking-wider text-pink-pale/40">F1 Score</div>
                   </div>
                 </div>
@@ -1175,6 +1203,15 @@ ${(state.report.references || []).map(ref => `- ${ref}`).join('\n')}
                                 <span className="text-pink-pale/80 font-mono uppercase">{state.experimentConfig.dataType}</span>
                               </div>
                             </div>
+                            {state.experimentConfig.kaggleDataset && (
+                              <div className="mt-4 p-3 bg-blue-900/20 border border-blue-500/20 rounded-xl flex items-center gap-3">
+                                <Database className="w-4 h-4 text-blue-400" />
+                                <div className="flex flex-col">
+                                  <span className="text-[10px] uppercase tracking-widest font-bold text-blue-400">Kaggle Dataset Integrated</span>
+                                  <span className="text-xs font-mono text-blue-200/80">{state.experimentConfig.kaggleDataset}</span>
+                                </div>
+                              </div>
+                            )}
                           </div>
                           <div className="space-y-4">
                             <h4 className="text-[10px] uppercase tracking-widest font-bold text-pink-deep/60">Evaluation Protocol</h4>
@@ -1486,6 +1523,103 @@ ${(state.report.references || []).map(ref => `- ${ref}`).join('\n')}
           </div>
         </div>
       </main>
+
+      {/* Hidden Snapshot for PDF Generation */}
+      <div className="hidden">
+        <div ref={snapshotRef} className="p-12 bg-white text-black font-serif">
+          <div className="text-center mb-12">
+            <h1 className="text-4xl font-bold mb-2">Research Snapshot</h1>
+            <p className="text-sm uppercase tracking-widest text-gray-500">
+              Iteration {state.iteration} • {state.status} • {new Date().toLocaleString()}
+            </p>
+            <p className="text-xl mt-4 font-bold">{state.topic}</p>
+          </div>
+
+          {state.hypothesis && (
+            <section className="mb-8 p-6 border border-gray-200 rounded-xl">
+              <h2 className="text-xl font-bold mb-4 text-blue-800">Hypothesis</h2>
+              <h3 className="text-lg font-bold mb-2">{state.hypothesis.title}</h3>
+              <p className="text-sm leading-relaxed">{state.hypothesis.description}</p>
+              <div className="grid grid-cols-2 gap-4 mt-4">
+                <div>
+                  <h4 className="text-xs font-bold uppercase text-gray-500">Rationale</h4>
+                  <p className="text-xs">{state.hypothesis.rationale}</p>
+                </div>
+                <div>
+                  <h4 className="text-xs font-bold uppercase text-gray-500">Expected Outcome</h4>
+                  <p className="text-xs">{state.hypothesis.expectedOutcome}</p>
+                </div>
+              </div>
+            </section>
+          )}
+
+          {state.gapIdentification && (
+            <section className="mb-8">
+              <h2 className="text-xl font-bold mb-4 text-blue-800">Gap Analysis</h2>
+              <p className="text-sm italic mb-4">{state.gapIdentification.summary}</p>
+              <div className="space-y-4">
+                {state.gapIdentification.gaps.map((gap, i) => (
+                  <div key={i} className="p-4 bg-gray-50 rounded-lg">
+                    <h4 className="text-sm font-bold">{gap.description}</h4>
+                    <p className="text-xs mt-1"><strong>Evidence:</strong> {gap.evidence}</p>
+                    <p className="text-xs"><strong>Impact:</strong> {gap.potentialImpact}</p>
+                  </div>
+                ))}
+              </div>
+            </section>
+          )}
+
+          {state.mathFormalization && (
+            <section className="mb-8">
+              <h2 className="text-xl font-bold mb-4 text-blue-800">Formalization</h2>
+              <div className="space-y-4">
+                <div>
+                  <h4 className="text-xs font-bold uppercase text-gray-500">Problem</h4>
+                  <p className="text-sm">{state.mathFormalization.problemFormulation}</p>
+                </div>
+                <div>
+                  <h4 className="text-xs font-bold uppercase text-gray-500">Objective</h4>
+                  <p className="text-sm font-mono bg-gray-100 p-2 rounded">{state.mathFormalization.objectiveFunction}</p>
+                </div>
+              </div>
+            </section>
+          )}
+
+          {state.experiment && (
+            <section className="mb-8">
+              <h2 className="text-xl font-bold mb-4 text-blue-800">Experimental Results</h2>
+              <div className="grid grid-cols-2 gap-4 mb-4">
+                <div className="p-4 bg-blue-50 rounded-xl text-center">
+                  <div className="text-2xl font-bold">{((state.experiment?.accuracy || 0) * 100).toFixed(1)}%</div>
+                  <div className="text-xs uppercase">Accuracy</div>
+                </div>
+                <div className="p-4 bg-blue-50 rounded-xl text-center">
+                  <div className="text-2xl font-bold">{((state.experiment?.f1Score || 0) * 100).toFixed(1)}%</div>
+                  <div className="text-xs uppercase">F1 Score</div>
+                </div>
+              </div>
+              <div className="text-xs font-mono bg-gray-900 text-gray-300 p-4 rounded-lg max-h-60 overflow-hidden">
+                {state.experiment?.logs?.slice(-20).map((log, i) => (
+                  <div key={i}>{log}</div>
+                ))}
+              </div>
+            </section>
+          )}
+
+          {state.papers.length > 0 && (
+            <section className="mb-8">
+              <h2 className="text-xl font-bold mb-4 text-blue-800">Key References</h2>
+              <div className="space-y-2">
+                {state.papers.slice(0, 10).map((paper, i) => (
+                  <div key={i} className="text-xs">
+                    <strong>[{i+1}]</strong> {paper.title} ({paper.authors?.join(', ')})
+                  </div>
+                ))}
+              </div>
+            </section>
+          )}
+        </div>
+      </div>
 
       {/* Footer */}
       <footer className="border-t border-pink-pale/10 py-12 mt-24 bg-dark-surface">
