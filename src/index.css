@@ -1,19 +1,348 @@
 @import "tailwindcss";
-@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=Cormorant+Garamond:ital,wght@0,400;0,500;0,600;1,400;1,500;1,600&family=JetBrains+Mono:wght@400;500&display=swap');
 
 @theme {
-  --font-sans: "Inter", ui-sans-serif, system-ui, sans-serif;
-  --font-serif: "Cormorant Garamond", serif;
-  --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, monospace;
-  
-  --color-pink-pale: #fce4ec;
-  --color-pink-deep: #f06292;
-  --color-dark-bg: #121212;
-  --color-dark-surface: #1e1e1e;
+  --font-sans: "MS Sans Serif", "Microsoft Sans Serif", Tahoma, Arial, sans-serif;
+  --font-serif: "MS Sans Serif", "Microsoft Sans Serif", Tahoma, Arial, sans-serif;
+  --font-mono: "Courier New", Courier, monospace;
+
+  /* Windows 2000 Color Palette */
+  --color-win-bg: #d4d0c8;
+  --color-win-surface: #d4d0c8;
+  --color-win-titlebar: #0a246a;
+  --color-win-titlebar-end: #a6caf0;
+  --color-win-titletext: #ffffff;
+  --color-win-border-light: #ffffff;
+  --color-win-border-dark: #808080;
+  --color-win-border-darker: #404040;
+  --color-win-highlight: #0a246a;
+  --color-win-highlight-text: #ffffff;
+  --color-win-text: #000000;
+  --color-win-text-muted: #444444;
+  --color-win-text-disabled: #808080;
+  --color-win-accent: #000080;
+  --color-win-scrollbar: #d4d0c8;
+  --color-win-white: #ffffff;
+  --color-win-inset: #ffffff;
+  --color-win-button-face: #d4d0c8;
+  --color-win-status: #d4d0c8;
+  --color-win-green: #008000;
+  --color-win-red: #ff0000;
+  --color-win-amber: #808000;
+
+  /* aliases for existing code compatibility */
+  --color-pink-pale: #000000;
+  --color-pink-deep: #000080;
+  --color-dark-bg: #d4d0c8;
+  --color-dark-surface: #d4d0c8;
 }
 
 @layer base {
   body {
-    @apply bg-dark-bg text-pink-pale font-sans;
+    background-color: var(--color-win-bg);
+    color: var(--color-win-text);
+    font-family: var(--font-sans);
+    font-size: 11px;
   }
+
+  * {
+    box-sizing: border-box;
+  }
+}
+
+/* ==========================================
+   Windows 2000 Raised/Sunken Border Helpers
+   ========================================== */
+.win-raised {
+  border-top: 2px solid var(--color-win-border-light);
+  border-left: 2px solid var(--color-win-border-light);
+  border-right: 2px solid var(--color-win-border-darker);
+  border-bottom: 2px solid var(--color-win-border-darker);
+}
+
+.win-sunken {
+  border-top: 2px solid var(--color-win-border-darker);
+  border-left: 2px solid var(--color-win-border-darker);
+  border-right: 2px solid var(--color-win-border-light);
+  border-bottom: 2px solid var(--color-win-border-light);
+}
+
+.win-inset {
+  border-top: 1px solid var(--color-win-border-dark);
+  border-left: 1px solid var(--color-win-border-dark);
+  border-right: 1px solid var(--color-win-border-light);
+  border-bottom: 1px solid var(--color-win-border-light);
+  background: var(--color-win-white);
+}
+
+/* Classic Window Panel */
+.win-panel {
+  background: var(--color-win-bg);
+  border-top: 2px solid var(--color-win-border-light);
+  border-left: 2px solid var(--color-win-border-light);
+  border-right: 2px solid var(--color-win-border-darker);
+  border-bottom: 2px solid var(--color-win-border-darker);
+}
+
+.win-panel-inner {
+  background: var(--color-win-bg);
+  border-top: 1px solid var(--color-win-border-dark);
+  border-left: 1px solid var(--color-win-border-dark);
+  border-right: 1px solid var(--color-win-border-light);
+  border-bottom: 1px solid var(--color-win-border-light);
+}
+
+/* Title Bar */
+.win-titlebar {
+  background: linear-gradient(to right, #0a246a, #a6caf0);
+  color: #ffffff;
+  padding: 3px 6px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-weight: bold;
+  font-size: 11px;
+  user-select: none;
+}
+
+/* Classic Button */
+.win-btn {
+  background: var(--color-win-button-face);
+  color: var(--color-win-text);
+  border-top: 2px solid var(--color-win-border-light);
+  border-left: 2px solid var(--color-win-border-light);
+  border-right: 2px solid var(--color-win-border-darker);
+  border-bottom: 2px solid var(--color-win-border-darker);
+  padding: 2px 12px;
+  font-family: var(--font-sans);
+  font-size: 11px;
+  cursor: pointer;
+  min-width: 75px;
+  text-align: center;
+}
+
+.win-btn:active:not(:disabled) {
+  border-top: 2px solid var(--color-win-border-darker);
+  border-left: 2px solid var(--color-win-border-darker);
+  border-right: 2px solid var(--color-win-border-light);
+  border-bottom: 2px solid var(--color-win-border-light);
+}
+
+.win-btn:disabled {
+  color: var(--color-win-text-disabled);
+  cursor: default;
+}
+
+.win-btn-default {
+  border-top: 2px solid var(--color-win-border-light);
+  border-left: 2px solid var(--color-win-border-light);
+  border-right: 2px solid var(--color-win-border-darker);
+  border-bottom: 2px solid var(--color-win-border-darker);
+  outline: 1px solid var(--color-win-text);
+  outline-offset: -4px;
+}
+
+/* Input */
+.win-input {
+  background: var(--color-win-white);
+  border-top: 1px solid var(--color-win-border-darker);
+  border-left: 1px solid var(--color-win-border-darker);
+  border-right: 1px solid var(--color-win-border-light);
+  border-bottom: 1px solid var(--color-win-border-light);
+  padding: 2px 4px;
+  font-family: var(--font-sans);
+  font-size: 11px;
+  color: var(--color-win-text);
+  outline: none;
+}
+
+.win-input:focus {
+  outline: 1px dotted var(--color-win-text);
+  outline-offset: -2px;
+}
+
+/* Progress bar */
+.win-progress {
+  background: var(--color-win-white);
+  border-top: 1px solid var(--color-win-border-darker);
+  border-left: 1px solid var(--color-win-border-darker);
+  border-right: 1px solid var(--color-win-border-light);
+  border-bottom: 1px solid var(--color-win-border-light);
+  height: 16px;
+  overflow: hidden;
+}
+
+.win-progress-fill {
+  height: 100%;
+  background: repeating-linear-gradient(
+    90deg,
+    #000080 0px,
+    #000080 8px,
+    #1084d0 8px,
+    #1084d0 14px
+  );
+}
+
+/* Scrollbar */
+::-webkit-scrollbar {
+  width: 16px;
+  height: 16px;
+}
+::-webkit-scrollbar-track {
+  background: var(--color-win-bg);
+  border-top: 1px solid var(--color-win-border-darker);
+  border-left: 1px solid var(--color-win-border-darker);
+}
+::-webkit-scrollbar-thumb {
+  background: var(--color-win-button-face);
+  border-top: 2px solid var(--color-win-border-light);
+  border-left: 2px solid var(--color-win-border-light);
+  border-right: 2px solid var(--color-win-border-darker);
+  border-bottom: 2px solid var(--color-win-border-darker);
+}
+::-webkit-scrollbar-button {
+  background: var(--color-win-button-face);
+  border-top: 2px solid var(--color-win-border-light);
+  border-left: 2px solid var(--color-win-border-light);
+  border-right: 2px solid var(--color-win-border-darker);
+  border-bottom: 2px solid var(--color-win-border-darker);
+  display: block;
+  height: 16px;
+  width: 16px;
+}
+
+/* Status bar */
+.win-statusbar {
+  background: var(--color-win-bg);
+  border-top: 1px solid var(--color-win-border-dark);
+  padding: 2px 6px;
+  font-size: 11px;
+}
+
+/* Tab */
+.win-tab {
+  background: var(--color-win-bg);
+  border-top: 2px solid var(--color-win-border-light);
+  border-left: 2px solid var(--color-win-border-light);
+  border-right: 2px solid var(--color-win-border-darker);
+  border-bottom: none;
+  padding: 3px 10px;
+  font-size: 11px;
+  cursor: pointer;
+  margin-right: 2px;
+}
+
+.win-tab-active {
+  background: var(--color-win-bg);
+  position: relative;
+  z-index: 1;
+  margin-bottom: -1px;
+}
+
+/* Groupbox */
+.win-groupbox {
+  border: 1px solid var(--color-win-border-dark);
+  border-top-color: var(--color-win-border-darker);
+  border-left-color: var(--color-win-border-darker);
+  padding: 8px;
+  position: relative;
+  margin-top: 10px;
+}
+
+.win-groupbox-label {
+  position: absolute;
+  top: -8px;
+  left: 8px;
+  background: var(--color-win-bg);
+  padding: 0 4px;
+  font-size: 11px;
+  color: var(--color-win-text);
+}
+
+/* Separator */
+.win-separator {
+  height: 0;
+  border-top: 1px solid var(--color-win-border-dark);
+  border-bottom: 1px solid var(--color-win-border-light);
+  margin: 4px 0;
+}
+
+/* Range slider */
+input[type="range"] {
+  -webkit-appearance: none;
+  appearance: none;
+  height: 4px;
+  background: var(--color-win-white);
+  border-top: 1px solid var(--color-win-border-darker);
+  border-left: 1px solid var(--color-win-border-darker);
+  outline: none;
+  cursor: pointer;
+}
+
+input[type="range"]::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 11px;
+  height: 20px;
+  background: var(--color-win-button-face);
+  border-top: 2px solid var(--color-win-border-light);
+  border-left: 2px solid var(--color-win-border-light);
+  border-right: 2px solid var(--color-win-border-darker);
+  border-bottom: 2px solid var(--color-win-border-darker);
+  cursor: pointer;
+}
+
+/* Markdown prose inside win panels */
+.win-prose p { margin: 0 0 6px 0; }
+.win-prose h1, .win-prose h2, .win-prose h3 {
+  font-weight: bold;
+  margin: 8px 0 4px 0;
+  color: var(--color-win-accent);
+}
+.win-prose ul, .win-prose ol {
+  padding-left: 16px;
+  margin: 4px 0;
+}
+.win-prose code {
+  font-family: var(--font-mono);
+  background: var(--color-win-white);
+  padding: 0 2px;
+  border: 1px solid var(--color-win-border-dark);
+}
+.win-prose pre {
+  background: var(--color-win-white);
+  border: 1px solid var(--color-win-border-darker);
+  padding: 6px;
+  overflow-x: auto;
+  font-size: 10px;
+}
+
+/* Animated blink for active status */
+@keyframes win-blink {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0; }
+}
+
+/* Taskbar-style footer */
+.win-taskbar {
+  background: var(--color-win-bg);
+  border-top: 2px solid var(--color-win-border-light);
+  padding: 2px 4px;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.win-start-btn {
+  background: var(--color-win-button-face);
+  border-top: 2px solid var(--color-win-border-light);
+  border-left: 2px solid var(--color-win-border-light);
+  border-right: 2px solid var(--color-win-border-darker);
+  border-bottom: 2px solid var(--color-win-border-darker);
+  padding: 2px 8px;
+  font-weight: bold;
+  font-size: 11px;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  cursor: pointer;
 }
